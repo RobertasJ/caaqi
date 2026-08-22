@@ -1,13 +1,18 @@
 [workspace]
-members = ["bevy_caaqu"]
+members = ["bevy_caaqi"]
 
 [package]
-name = "caaqu"
+name = "caaqi"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bevy = "0.19"
+bevy = { version = "0.19", default-features = false, features = ["2d"] }
+bevy_vello = "0.14.0"
 env_logger = "0.11.11"
+bevy_caaqi = { package = "bevy_caaqi", path = "bevy_caaqi" }
+
+[features]
+hotpatching = ["bevy/hotpatching"]
 
 [workspace.dependencies]

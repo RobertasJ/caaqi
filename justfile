@@ -1,2 +1,2 @@
-hot-patch:
-   dx serve --hot-patch
+hotpatch:
+   dx serve --hot-patch --features hotpatching

@@ -1,0 +1,11 @@
+[package]
+name = "bevy_caaqi"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = { version = "0.19", default-features = false, features = ["2d"] }
+bevy_vello = "0.14.0"
+bon = "3"
+slotmap = "1.1.1"
+smallvec = "1.15.2"

@@ -27,6 +27,8 @@
               dioxus-cli
               wasm-pack
               just
+              bubblewrap
+              socat
             ];
             buildInputs = with pkgs; [
               pkg-config
