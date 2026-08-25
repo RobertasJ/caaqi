@@ -1,5 +1,4 @@
-pub mod layout;
-pub mod tree;
+pub mod context;
 
 use bevy::{camera::visibility::NoFrustumCulling, prelude::*};
 use bevy_vello::{
@@ -9,7 +8,7 @@ use bevy_vello::{
 };
 use std::str::FromStr;
 
-use crate::tree::UiTree;
+use crate::context::{CaaqiCtx, NodeId, UiTree};
 
 #[derive(Debug, Default, Component)]
 pub struct CaaqiUi;
@@ -19,16 +18,12 @@ pub struct CaaqiPlugin;
 impl Plugin for CaaqiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(VelloPlugin::default())
-            .add_systems(Update, (size_uis, draw_uis).chain());
+            .add_systems(Update, (draw_uis).chain());
     }
 }
 
-pub fn size_uis(mut ui_trees: Query<&mut UiTree, With<CaaqiUi>>, window: Single<&Window>) {
-    for tree in &mut ui_trees {
-        fn rec(tree: &mut UiTree) {
-            // Text
-        }
-    }
+pub fn size_uis(mut ui_trees: Query<&mut CaaqiCtx, With<CaaqiUi>>, window: Single<&Window>) {
+    for tree in &mut ui_trees {}
 }
 
 pub fn draw_uis(
