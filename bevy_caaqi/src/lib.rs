@@ -8,10 +8,15 @@ use bevy_vello::{
 };
 use std::str::FromStr;
 
-use crate::context::{CaaqiCtx, NodeId, UiTree};
+pub use bevy_vello::vello::peniko::Color;
+
+use crate::context::ui_node::DetachedNode;
 
 #[derive(Debug, Default, Component)]
 pub struct CaaqiUi;
+
+#[derive(Debug, Component)]
+pub struct CaaqiUiRoot(pub DetachedNode);
 
 pub struct CaaqiPlugin;
 
@@ -20,10 +25,6 @@ impl Plugin for CaaqiPlugin {
         app.add_plugins(VelloPlugin::default())
             .add_systems(Update, (draw_uis).chain());
     }
-}
-
-pub fn size_uis(mut ui_trees: Query<&mut CaaqiCtx, With<CaaqiUi>>, window: Single<&Window>) {
-    for tree in &mut ui_trees {}
 }
 
 pub fn draw_uis(

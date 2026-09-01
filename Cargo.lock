@@ -578,7 +578,6 @@ dependencies = [
  "bevy_vello",
  "bon",
  "scoped_thread_local",
- "slotmap",
  "smallvec",
 ]
 

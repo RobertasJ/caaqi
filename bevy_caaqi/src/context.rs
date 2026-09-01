@@ -1,30 +1,34 @@
-mod component;
-mod ui_trees;
+pub mod component;
+pub mod drawing;
+pub mod position;
+pub mod sizing;
+pub mod ui_node;
 
-use bevy::ecs::component::Component;
-pub use ui_trees::{
-    CanContainChildren, Container, CreateElement, Item, Leaf, Node, NodeId, Scope, UiTree,
-    attach_node, detached_node, detached_node_scope, detached_node_scope_with, node, node_scope,
-    node_scope_with, scope, scope_with,
-};
+use bevy::ecs::system::Commands;
+use smallvec::SmallVec;
 
-#[derive(Debug, Default, Component)]
-pub struct CaaqiCtx {
-    pub(crate) trees: UiTree,
+use crate::context::ui_node::DetachedNode;
+
+pub struct CaaqiCtx<'w, 's> {
+    commands: Commands<'w, 's>,
+    attached_nodes: SmallVec<[DetachedNode; 1]>,
 }
 
-scoped_thread_local::scoped_thread_local!(static CTX: CaaqiCtx);
+scoped_thread_local::scoped_thread_local!(static CTX: CaaqiCtx<'_, '_>);
 
-impl CaaqiCtx {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn trees(&self) -> &UiTree {
-        &self.trees
+impl<'w, 's> CaaqiCtx<'w, 's> {
+    pub fn new(commands: Commands<'w, 's>) -> Self {
+        Self {
+            commands,
+            attached_nodes: Default::default(),
+        }
     }
 }
 
-pub fn with_caaqi_ctx<R>(ctx: &mut CaaqiCtx, scope: impl FnOnce() -> R) -> R {
+pub fn enter_caaqi_ctx<R>(ctx: &mut CaaqiCtx, scope: impl FnOnce() -> R) -> R {
     CTX.set(ctx, scope)
+}
+
+pub fn with_caaqi_ctx<R>(scope: impl FnOnce(&mut CaaqiCtx) -> R) -> R {
+    CTX.with(scope)
 }
