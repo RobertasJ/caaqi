@@ -13,9 +13,9 @@ pub use bevy_vello::vello::peniko::Color;
 
 use crate::{
     context::DetachedNode,
-    node_components::{CaaqiNode, Drawing, Positioning, Sizing},
-    node_components::tree::{CaaqiUiChildOf, CaaqiUiChildren},
     node_components::positioning::Direction,
+    node_components::tree::{CaaqiUiChildOf, CaaqiUiChildren},
+    node_components::{CaaqiNode, Drawing, Positioning, Sizing},
 };
 
 #[derive(Debug, Default, Component)]
@@ -25,7 +25,7 @@ pub struct CaaqiUi;
 pub struct CaaqiUiRoot(pub DetachedNode);
 
 /// SystemSet for Caaqi UI layout and rendering operations.
-/// 
+///
 /// Each variant represents a stage in the UI processing pipeline.
 /// External systems can order before or after specific stages using `in_set()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, SystemSet)]
@@ -74,9 +74,8 @@ fn ui_changed(
             Added<Sizing>,
         ),
     >,
-    windows: Query<Entity, Changed<Window>>,
 ) -> bool {
-    !nodes.is_empty() || !windows.is_empty()
+    !nodes.is_empty()
 }
 
 fn window_changed(windows: Query<Entity, Changed<Window>>) -> bool {

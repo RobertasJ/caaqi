@@ -1,6 +1,6 @@
 use bevy_vello::vello::peniko;
 
-use super::{CanHaveChildren, IntoNodeBundle};
+use super::{CanHaveChildren, IntoUiNode};
 use crate::node_components::positioning::Direction;
 use crate::node_components::{Drawing, Positioning, Sizing};
 
@@ -145,9 +145,9 @@ impl Item {
     }
 }
 
-impl IntoNodeBundle for Item {
-    fn into_node_bundle(self, _ctx: &mut crate::context::CaaqiCtx) -> impl bevy::prelude::Bundle {
-        (
+impl IntoUiNode for Item {
+    fn into_ui_node(self, _ctx: &mut crate::context::CaaqiCtx) -> crate::context::DetachedNode {
+        _ctx.create_node((
             Sizing {
                 inner_width: self.width,
                 inner_height: self.height,
@@ -166,7 +166,7 @@ impl IntoNodeBundle for Item {
                 main_axis: self.main_axis,
                 ..Default::default()
             },
-        )
+        ))
     }
 }
 

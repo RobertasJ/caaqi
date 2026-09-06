@@ -2,7 +2,7 @@ use bevy::ecs::system::Commands;
 use bevy::prelude::*;
 use smallvec::SmallVec;
 
-use crate::element::IntoNodeBundle;
+use crate::element::{IntoUiNode, Scope};
 
 /// Opaque handle to a spawned UI node entity.
 /// Can only be constructed through `CaaqiCtx` methods.
@@ -34,14 +34,12 @@ impl<'w, 's> CaaqiCtx<'w, 's> {
         }
     }
 
-    /// Create a node from an element that implements `IntoNodeBundle`.
-    /// This is the primary method for node creation; it ensures exactly one
-    /// entity is spawned with the marker component.
-    pub fn create_node<E>(&mut self, element: E) -> DetachedNode
+    /// Create a node from a bundle.
+    /// This is the primary method for node creation
+    pub fn create_node<B>(&mut self, bundle: B) -> DetachedNode
     where
-        E: crate::element::IntoNodeBundle,
+        B: Bundle,
     {
-        let bundle = element.into_node_bundle(self);
         DetachedNode(
             self.commands
                 .spawn((crate::node_components::CaaqiNode, bundle))
@@ -74,40 +72,23 @@ pub fn with_caaqi_ctx<R>(scope: impl FnOnce(&mut CaaqiCtx) -> R) -> R {
     CTX.with(scope)
 }
 
-pub fn detached_node<Element: IntoNodeBundle>(element: Element) -> DetachedNode {
-    with_caaqi_ctx(|ctx| ctx.create_node(element))
+pub fn detached_node<Element: IntoUiNode>(element: Element) -> DetachedNode {
+    with_caaqi_ctx(|ctx| element.into_ui_node(ctx))
 }
 
 pub fn attach_node(node: DetachedNode) {
     with_caaqi_ctx(|ctx| ctx.attached_nodes.push(node));
 }
 
-pub fn node<Element: IntoNodeBundle>(element: Element) {
+pub fn node<Element: IntoUiNode>(element: Element) {
     attach_node(detached_node(element));
-}
-
-pub fn scope<Element>(scope: impl FnOnce(&mut Element)) -> crate::element::Scope<Element>
-where
-    Element: crate::element::CanHaveChildren + Default,
-{
-    crate::element::Scope::new(scope)
 }
 
 pub fn detached_node_scope<Element>(scope: impl FnOnce(&mut Element)) -> DetachedNode
 where
     Element: crate::element::CanHaveChildren + Default,
 {
-    let scope_elem = crate::element::Scope::new(scope);
-    let children = scope_elem.children.clone();
-    let parent = detached_node(scope_elem);
-    with_caaqi_ctx(|ctx| {
-        for child in children {
-            ctx.commands.entity(child.entity()).insert(
-                crate::node_components::tree::CaaqiUiChildOf(parent.entity()),
-            );
-        }
-    });
-    parent
+    detached_node(Scope::new(scope))
 }
 
 pub fn node_scope<Element>(scope: impl FnOnce(&mut Element))
@@ -115,16 +96,6 @@ where
     Element: crate::element::CanHaveChildren + Default,
 {
     attach_node(detached_node_scope(scope));
-}
-
-pub fn scope_with<Element>(
-    element: Element,
-    scope: impl FnOnce(&mut Element),
-) -> crate::element::Scope<Element>
-where
-    Element: crate::element::CanHaveChildren,
-{
-    crate::element::Scope::new_with(element, scope)
 }
 
 pub fn detached_node_scope_with<Element>(
@@ -151,5 +122,5 @@ pub fn node_scope_with<Element>(element: Element, scope: impl FnOnce(&mut Elemen
 where
     Element: crate::element::CanHaveChildren,
 {
-    node(scope_with(element, scope));
+    node(Scope::new_with(element, scope));
 }

@@ -3,13 +3,13 @@ use std::str::FromStr;
 use bevy::{camera::visibility::NoFrustumCulling, prelude::*};
 use bevy_vello::{integrations::scene::VelloScene2d, render::VelloView};
 
+use bevy_caaqi::context::{detached_node_scope, node, node_scope, node_scope_with};
 use bevy_caaqi::{
     CaaqiPlugin, CaaqiUi, CaaqiUiRoot,
     context::{CaaqiCtx, enter_caaqi_ctx},
     element::Item,
     node_components::positioning::Direction,
 };
-use bevy_caaqi::context::{detached_node_scope, node, node_scope, node_scope_with};
 
 fn main() {
     App::new()
@@ -32,7 +32,22 @@ fn setup_camera(mut commands: Commands) {
                     .height(200.0),
             );
 
-            fun_name1(heights);
+            node_scope_with(Item::new().main_axis(Direction::Horizontal), |item| {
+                node(
+                    Item::new()
+                        .color(bevy_caaqi::Color::from_str("#943fef").unwrap())
+                        .width(80.0)
+                        .height(80.0)
+                        .margin(10.0, 10.0, 10.0, 10.0),
+                );
+
+                node(
+                    Item::new()
+                        .color(bevy_caaqi::Color::from_str("#3fef4b").unwrap())
+                        .width(100.0)
+                        .height(heights),
+                );
+            });
         })
     });
 
@@ -42,25 +57,6 @@ fn setup_camera(mut commands: Commands) {
         CaaqiUi,
         CaaqiUiRoot(root_node),
     ));
-}
-
-fn fun_name1(heights: f64) {
-    node_scope_with(Item::new().main_axis(Direction::Horizontal), |item| {
-        node(
-            Item::new()
-                .color(bevy_caaqi::Color::from_str("#943fef").unwrap())
-                .width(80.0)
-                .height(80.0)
-                .margin(10.0, 10.0, 10.0, 10.0),
-        );
-
-        node(
-            Item::new()
-                .color(bevy_caaqi::Color::from_str("#3fef4b").unwrap())
-                .width(100.0)
-                .height(heights),
-        );
-    });
 }
 
 fn fun_name(heights: f64) {

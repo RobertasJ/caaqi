@@ -4,13 +4,12 @@ pub mod scope;
 pub use item::Item;
 pub use scope::Scope;
 
-use bevy::prelude::Bundle;
-use crate::context::CaaqiCtx;
+use crate::context::{CaaqiCtx, DetachedNode};
 
-/// Trait for types that can be converted into a Bevy bundle for a CaaqiNode entity.
-/// Implementations should produce exactly one bundle per element instance.
-pub trait IntoNodeBundle {
-    fn into_node_bundle(self, ctx: &mut CaaqiCtx) -> impl Bundle;
+/// Marker trait for element types that can be created as UI nodes.
+pub trait IntoUiNode {
+    /// Convert the element into a UI node bundle.
+    fn into_ui_node(self, ctx: &mut CaaqiCtx) -> DetachedNode;
 }
 
 /// Marker trait for element types that can contain children.
@@ -20,4 +19,4 @@ pub trait IntoNodeBundle {
     label = "this element kind does not allow children",
     note = "implement `CanHaveChildren` to allow this element to contain children"
 )]
-pub trait CanHaveChildren: IntoNodeBundle {}
+pub trait CanHaveChildren: IntoUiNode {}
