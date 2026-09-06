@@ -13,4 +13,4 @@ pub use tree::{CaaqiUiChildOf, CaaqiUiChildren};
 /// Marker component identifying an entity as part of the Caaqi UI system.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Component)]
 #[require(Sizing, Drawing, Positioning)]
-pub struct CaaqiNode;
+pub(crate) struct CaaqiNode;

@@ -24,6 +24,22 @@ pub struct CaaqiUi;
 #[derive(Debug, Component)]
 pub struct CaaqiUiRoot(pub DetachedNode);
 
+/// SystemSet for Caaqi UI layout and rendering operations.
+/// 
+/// Each variant represents a stage in the UI processing pipeline.
+/// External systems can order before or after specific stages using `in_set()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, SystemSet)]
+pub enum CaaqiUiSystems {
+    /// Size calculation pass (bottom-up traversal).
+    Sizing,
+    /// Position calculation pass (top-down traversal).
+    Positioning,
+    /// Render instruction generation.
+    Drawing,
+    /// Final transform updates and rendering.
+    Rendering,
+}
+
 pub struct CaaqiPlugin;
 
 impl Plugin for CaaqiPlugin {
@@ -31,11 +47,20 @@ impl Plugin for CaaqiPlugin {
         app.add_plugins(VelloPlugin::default())
             .add_systems(
                 Update,
-                (size_uis, position_uis, draw_uis)
+                (
+                    size_uis.in_set(CaaqiUiSystems::Sizing),
+                    position_uis.in_set(CaaqiUiSystems::Positioning),
+                    draw_uis.in_set(CaaqiUiSystems::Drawing),
+                )
                     .chain()
                     .run_if(ui_changed),
             )
-            .add_systems(Update, move_ui_to_origin.run_if(window_changed));
+            .add_systems(
+                Update,
+                move_ui_to_origin
+                    .in_set(CaaqiUiSystems::Rendering)
+                    .run_if(window_changed),
+            );
     }
 }
 
@@ -58,7 +83,7 @@ fn window_changed(windows: Query<Entity, Changed<Window>>) -> bool {
     !windows.is_empty()
 }
 
-pub fn size_uis(
+fn size_uis(
     mut scenes: Query<&CaaqiUiRoot, With<CaaqiUi>>,
     mut tree: Query<(Option<&CaaqiUiChildren>, Option<&CaaqiUiChildOf>), With<CaaqiNode>>,
     mut sizings: Query<&mut Sizing, With<CaaqiNode>>,
@@ -111,7 +136,7 @@ pub fn size_uis(
     }
 }
 
-pub fn position_uis(
+fn position_uis(
     mut scenes: Query<&CaaqiUiRoot, With<CaaqiUi>>,
     mut tree: Query<(Option<&CaaqiUiChildren>, Option<&CaaqiUiChildOf>), With<CaaqiNode>>,
     mut positionings: Query<&mut Positioning, With<CaaqiNode>>,
