@@ -1,4 +1,6 @@
 pub mod context;
+pub mod element;
+pub mod node_components;
 
 use bevy::{camera::visibility::NoFrustumCulling, prelude::*};
 use bevy_vello::{
@@ -6,15 +8,14 @@ use bevy_vello::{
     integrations::scene::VelloScene2d,
     vello::{kurbo, peniko},
 };
-use std::str::FromStr;
 
 pub use bevy_vello::vello::peniko::Color;
 
-use crate::context::{
-    drawing::Drawing,
-    positioning::{self, Direction, Positioning},
-    sizing::Sizing,
-    ui_node::{CaaqiNode, CaaqiUiChildOf, CaaqiUiChildren, DetachedNode},
+use crate::{
+    context::DetachedNode,
+    node_components::{CaaqiNode, Drawing, Positioning, Sizing},
+    node_components::tree::{CaaqiUiChildOf, CaaqiUiChildren},
+    node_components::positioning::Direction,
 };
 
 #[derive(Debug, Default, Component)]
@@ -48,12 +49,12 @@ fn ui_changed(
             Added<Sizing>,
         ),
     >,
-    windows: Query<Entity, (Changed<Window>)>,
+    windows: Query<Entity, Changed<Window>>,
 ) -> bool {
     !nodes.is_empty() || !windows.is_empty()
 }
 
-fn window_changed(windows: Query<Entity, (Changed<Window>)>) -> bool {
+fn window_changed(windows: Query<Entity, Changed<Window>>) -> bool {
     !windows.is_empty()
 }
 
@@ -175,7 +176,7 @@ fn move_ui_to_origin(
 
 fn draw_uis(
     mut scenes: Query<(&mut Transform, &mut VelloScene2d, &CaaqiUiRoot), With<CaaqiUi>>,
-    nodes: Query<(&Drawing, &Sizing, &Positioning, Option<&CaaqiUiChildren>), (With<CaaqiNode>)>,
+    nodes: Query<(&Drawing, &Sizing, &Positioning, Option<&CaaqiUiChildren>), With<CaaqiNode>>,
     window: Single<&Window>,
 ) {
     for (mut transform, mut scene, CaaqiUiRoot(DetachedNode(root))) in &mut scenes {

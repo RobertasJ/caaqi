@@ -5,12 +5,11 @@ use bevy_vello::{integrations::scene::VelloScene2d, render::VelloView};
 
 use bevy_caaqi::{
     CaaqiPlugin, CaaqiUi, CaaqiUiRoot,
-    context::{
-        CaaqiCtx, enter_caaqi_ctx,
-        positioning::Direction,
-        ui_node::{Item, detached_node_scope, node, node_scope, node_scope_with},
-    },
+    context::{CaaqiCtx, enter_caaqi_ctx},
+    element::Item,
+    node_components::positioning::Direction,
 };
+use bevy_caaqi::context::{detached_node_scope, node, node_scope, node_scope_with};
 
 fn main() {
     App::new()
