@@ -10,7 +10,12 @@ use std::str::FromStr;
 
 pub use bevy_vello::vello::peniko::Color;
 
-use crate::context::ui_node::DetachedNode;
+use crate::context::{
+    drawing::Drawing,
+    positioning::{self, Direction, Positioning},
+    sizing::Sizing,
+    ui_node::{CaaqiNode, CaaqiUiChildOf, CaaqiUiChildren, DetachedNode},
+};
 
 #[derive(Debug, Default, Component)]
 pub struct CaaqiUi;
@@ -23,26 +28,206 @@ pub struct CaaqiPlugin;
 impl Plugin for CaaqiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(VelloPlugin::default())
-            .add_systems(Update, (draw_uis).chain());
+            .add_systems(
+                Update,
+                (size_uis, position_uis, draw_uis)
+                    .chain()
+                    .run_if(ui_changed),
+            )
+            .add_systems(Update, move_ui_to_origin.run_if(window_changed));
     }
 }
 
-pub fn draw_uis(
-    mut scenes: Query<(&mut Transform, &mut VelloScene2d), With<CaaqiUi>>,
+fn ui_changed(
+    nodes: Query<
+        Entity,
+        (
+            With<CaaqiNode>,
+            Added<Drawing>,
+            Added<Positioning>,
+            Added<Sizing>,
+        ),
+    >,
+    windows: Query<Entity, (Changed<Window>)>,
+) -> bool {
+    !nodes.is_empty() || !windows.is_empty()
+}
+
+fn window_changed(windows: Query<Entity, (Changed<Window>)>) -> bool {
+    !windows.is_empty()
+}
+
+pub fn size_uis(
+    mut scenes: Query<&CaaqiUiRoot, With<CaaqiUi>>,
+    mut tree: Query<(Option<&CaaqiUiChildren>, Option<&CaaqiUiChildOf>), With<CaaqiNode>>,
+    mut sizings: Query<&mut Sizing, With<CaaqiNode>>,
+    positionings: Query<&Positioning, With<CaaqiNode>>,
     window: Single<&Window>,
 ) {
-    for (mut transform, mut scene) in &mut scenes {
-        transform.translation = Vec3::new(window.width() / -2.0, window.height() / 2.0, 0.0);
+    for CaaqiUiRoot(DetachedNode(root)) in &mut scenes {
+        fn bottom_up_traverse(
+            node: Entity,
+            tree: &Query<(Option<&CaaqiUiChildren>, Option<&CaaqiUiChildOf>), With<CaaqiNode>>,
+            sizings: &mut Query<&mut Sizing, With<CaaqiNode>>,
+            positionings: &Query<&Positioning, With<CaaqiNode>>,
+        ) -> Sizing {
+            let positioning = positionings.get(node).unwrap();
+            let sizing = sizings.get(node).unwrap();
 
+            let mut inner_width: f64 = sizing.margin_left + sizing.margin_right;
+            let mut inner_height: f64 = sizing.margin_top + sizing.margin_bottom;
+
+            if let Some(children) = tree.get(node).unwrap().0 {
+                for child in children.iter() {
+                    let child_sizing = bottom_up_traverse(child, tree, sizings, positionings);
+
+                    match positioning.main_axis {
+                        Direction::Horizontal => {
+                            inner_width += child_sizing.inner_width.unwrap();
+                            inner_height = inner_height.max(child_sizing.inner_width.unwrap());
+                        }
+                        Direction::Vertical => {
+                            inner_width = inner_width.max(child_sizing.inner_width.unwrap());
+                            inner_height += child_sizing.inner_width.unwrap();
+                        }
+                    }
+                }
+            }
+
+            let mut sizing = sizings.get_mut(node).unwrap();
+
+            if sizing.inner_width.is_none() {
+                sizing.inner_width = Some(inner_width);
+            }
+            if sizing.inner_width.is_none() {
+                sizing.inner_width = Some(inner_height);
+            }
+
+            *sizing
+        }
+
+        bottom_up_traverse(*root, &tree, &mut sizings, &positionings);
+    }
+}
+
+pub fn position_uis(
+    mut scenes: Query<&CaaqiUiRoot, With<CaaqiUi>>,
+    mut tree: Query<(Option<&CaaqiUiChildren>, Option<&CaaqiUiChildOf>), With<CaaqiNode>>,
+    mut positionings: Query<&mut Positioning, With<CaaqiNode>>,
+    sizings: Query<&Sizing, With<CaaqiNode>>,
+    window: Single<&Window>,
+) {
+    for CaaqiUiRoot(DetachedNode(root)) in &mut scenes {
+        fn top_down_traverse(
+            node: Entity,
+            tree: &Query<(Option<&CaaqiUiChildren>, Option<&CaaqiUiChildOf>), With<CaaqiNode>>,
+            positionings: &mut Query<&mut Positioning, With<CaaqiNode>>,
+            sizings: &Query<&Sizing, With<CaaqiNode>>,
+            position_x: f64,
+            position_y: f64,
+        ) -> Sizing {
+            let positioning = positionings.get(node).unwrap().clone();
+            let sizing = sizings.get(node).unwrap();
+
+            let mut child_x: f64 = position_x + sizing.padding_left;
+            let mut child_y: f64 = position_y + sizing.padding_top;
+
+            if let Some(children) = tree.get(node).unwrap().0 {
+                for child in children.iter() {
+                    let child_sizing =
+                        top_down_traverse(child, tree, positionings, sizings, child_x, child_y);
+
+                    match positioning.main_axis {
+                        Direction::Horizontal => {
+                            child_x += child_sizing.outer_width();
+                        }
+                        Direction::Vertical => {
+                            child_y += child_sizing.outer_height();
+                        }
+                    }
+                }
+            }
+
+            let mut positioning = positionings.get_mut(node).unwrap();
+
+            if positioning.x.is_none() {
+                positioning.x = Some(position_x);
+            }
+            if positioning.y.is_none() {
+                positioning.y = Some(position_y);
+            }
+
+            *sizing
+        }
+
+        top_down_traverse(*root, &tree, &mut positionings, &sizings, 0.0, 0.0);
+    }
+}
+
+fn move_ui_to_origin(
+    mut scenes: Query<(&mut Transform, &CaaqiUiRoot), With<CaaqiUi>>,
+    windows: Single<&Window>,
+) {
+    for (mut transform, CaaqiUiRoot(DetachedNode(root))) in &mut scenes {
+        transform.translation = Vec3::new(windows.width() / -2.0, windows.height() / 2.0, 0.0);
+    }
+}
+
+fn draw_uis(
+    mut scenes: Query<(&mut Transform, &mut VelloScene2d, &CaaqiUiRoot), With<CaaqiUi>>,
+    nodes: Query<(&Drawing, &Sizing, &Positioning, Option<&CaaqiUiChildren>), (With<CaaqiNode>)>,
+    window: Single<&Window>,
+) {
+    for (mut transform, mut scene, CaaqiUiRoot(DetachedNode(root))) in &mut scenes {
         scene.reset();
 
-        scene.fill(
-            peniko::Fill::NonZero,
-            kurbo::Affine::default(),
-            peniko::Color::from_str("#111111").unwrap(),
-            None,
-            &kurbo::Rect::new(0.0, 0.0, 50.0, 50.0),
-        );
+        fn recursive_draw(
+            node: Entity,
+            nodes: &Query<
+                (&Drawing, &Sizing, &Positioning, Option<&CaaqiUiChildren>),
+                With<CaaqiNode>,
+            >,
+            scene: &mut VelloScene2d,
+        ) {
+            let (drawing, sizing, positioning, children) = nodes.get(node).unwrap();
+
+            let x = positioning.x.unwrap_or_else(|| {
+                info!("Node {:?} has no x position, defaulting to 0.0", node);
+
+                0.0
+            });
+            let y = positioning.y.unwrap_or_else(|| {
+                info!("Node {:?} has no y position, defaulting to 0.0", node);
+
+                0.0
+            });
+
+            let rect = kurbo::Rect::from_origin_size(
+                (x + sizing.margin_left, y + sizing.margin_top),
+                (sizing.visible_width(), sizing.visible_height()),
+            );
+
+            println!(
+                "Drawing node {:?} with rect {:?} and color {:?}",
+                node, rect, drawing.color
+            );
+
+            scene.fill(
+                peniko::Fill::NonZero,
+                Default::default(),
+                drawing.color,
+                None,
+                &rect,
+            );
+
+            if let Some(children) = children {
+                for child in children.iter() {
+                    recursive_draw(child, nodes, scene);
+                }
+            }
+        }
+
+        recursive_draw(*root, &nodes, &mut scene);
     }
 }
 

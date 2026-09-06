@@ -1,6 +1,6 @@
 pub mod component;
 pub mod drawing;
-pub mod position;
+pub mod positioning;
 pub mod sizing;
 pub mod ui_node;
 

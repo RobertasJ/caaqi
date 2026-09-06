@@ -14,3 +14,4 @@ bevy_caaqi = { package = "bevy_caaqi", path = "bevy_caaqi" }
 
 [features]
 hotpatching = ["bevy/hotpatching"]
+debug = ["bevy/debug"]
