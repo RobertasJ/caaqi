@@ -1,13 +1,11 @@
 use smallvec::SmallVec;
 
+use super::{CanHaveChildren, IntoNodeBundle};
 use crate::context::{CaaqiCtx, DetachedNode, with_caaqi_ctx};
-use crate::node_components::tree::CaaqiUiChildOf;
-use super::{CreateElement, CanContainChildren};
 
 pub struct Scope<Element>
 where
-    Element: CreateElement,
-    Element::Kind: CanContainChildren<Element>,
+    Element: CanHaveChildren,
 {
     pub container: Element,
     pub children: SmallVec<[DetachedNode; 1]>,
@@ -15,8 +13,7 @@ where
 
 impl<Element> Scope<Element>
 where
-    Element: CreateElement,
-    Element::Kind: CanContainChildren<Element>,
+    Element: CanHaveChildren,
 {
     pub fn new_with<F>(mut element: Element, scope: F) -> Self
     where
@@ -43,28 +40,13 @@ where
     }
 }
 
-impl<Element> CreateElement for Scope<Element>
+impl<Element> IntoNodeBundle for Scope<Element>
 where
-    Element: CreateElement,
-    Element::Kind: CanContainChildren<Element>,
+    Element: CanHaveChildren,
 {
-    type Kind = super::Leaf;
-
-    fn insert_element(self, ctx: &mut CaaqiCtx) -> DetachedNode {
-        let container = self.container;
-        let node = container.insert_element(ctx);
-        let children = self.children;
-
-        for child in &children {
-            if node == *child {
-                panic!("cannot attach a group to itself");
-            }
-
-            ctx.commands
-                .entity(child.entity())
-                .insert(CaaqiUiChildOf(node.entity()));
-        }
-
-        node
+    fn into_node_bundle(self, ctx: &mut CaaqiCtx) -> impl bevy::prelude::Bundle {
+        self.container.into_node_bundle(ctx)
     }
 }
+
+impl<Element> CanHaveChildren for Scope<Element> where Element: CanHaveChildren {}

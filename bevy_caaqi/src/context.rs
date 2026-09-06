@@ -1,8 +1,8 @@
-use bevy::prelude::*;
 use bevy::ecs::system::Commands;
+use bevy::prelude::*;
 use smallvec::SmallVec;
 
-use crate::element::CreateElement;
+use crate::element::IntoNodeBundle;
 
 /// Opaque handle to a spawned UI node entity.
 /// Can only be constructed through `CaaqiCtx` methods.
@@ -58,9 +58,9 @@ impl<'w, 's> CaaqiCtx<'w, 's> {
         children: impl IntoIterator<Item = DetachedNode>,
     ) -> DetachedNode {
         for child in children {
-            self.commands
-                .entity(child.entity())
-                .insert(crate::node_components::tree::CaaqiUiChildOf(parent.entity()));
+            self.commands.entity(child.entity()).insert(
+                crate::node_components::tree::CaaqiUiChildOf(parent.entity()),
+            );
         }
         parent
     }
@@ -74,46 +74,55 @@ pub fn with_caaqi_ctx<R>(scope: impl FnOnce(&mut CaaqiCtx) -> R) -> R {
     CTX.with(scope)
 }
 
-pub fn detached_node<Element: CreateElement>(element: Element) -> DetachedNode {
-    with_caaqi_ctx(|ctx| element.insert_element(ctx))
+pub fn detached_node<Element: IntoNodeBundle>(element: Element) -> DetachedNode {
+    with_caaqi_ctx(|ctx| ctx.create_node(element))
 }
 
 pub fn attach_node(node: DetachedNode) {
     with_caaqi_ctx(|ctx| ctx.attached_nodes.push(node));
 }
 
-pub fn node<Element: CreateElement>(element: Element) {
+pub fn node<Element: IntoNodeBundle>(element: Element) {
     attach_node(detached_node(element));
 }
 
 pub fn scope<Element>(scope: impl FnOnce(&mut Element)) -> crate::element::Scope<Element>
 where
-    Element: CreateElement + Default,
-    Element::Kind: crate::element::CanContainChildren<Element>,
+    Element: crate::element::CanHaveChildren + Default,
 {
     crate::element::Scope::new(scope)
 }
 
 pub fn detached_node_scope<Element>(scope: impl FnOnce(&mut Element)) -> DetachedNode
 where
-    Element: CreateElement + Default,
-    Element::Kind: crate::element::CanContainChildren<Element>,
+    Element: crate::element::CanHaveChildren + Default,
 {
-    detached_node(crate::element::Scope::new(scope))
+    let scope_elem = crate::element::Scope::new(scope);
+    let children = scope_elem.children.clone();
+    let parent = detached_node(scope_elem);
+    with_caaqi_ctx(|ctx| {
+        for child in children {
+            ctx.commands.entity(child.entity()).insert(
+                crate::node_components::tree::CaaqiUiChildOf(parent.entity()),
+            );
+        }
+    });
+    parent
 }
 
 pub fn node_scope<Element>(scope: impl FnOnce(&mut Element))
 where
-    Element: CreateElement + Default,
-    Element::Kind: crate::element::CanContainChildren<Element>,
+    Element: crate::element::CanHaveChildren + Default,
 {
-    node(crate::element::Scope::new(scope))
+    attach_node(detached_node_scope(scope));
 }
 
-pub fn scope_with<Element>(element: Element, scope: impl FnOnce(&mut Element)) -> crate::element::Scope<Element>
+pub fn scope_with<Element>(
+    element: Element,
+    scope: impl FnOnce(&mut Element),
+) -> crate::element::Scope<Element>
 where
-    Element: CreateElement,
-    Element::Kind: crate::element::CanContainChildren<Element>,
+    Element: crate::element::CanHaveChildren,
 {
     crate::element::Scope::new_with(element, scope)
 }
@@ -123,16 +132,24 @@ pub fn detached_node_scope_with<Element>(
     scope: impl FnOnce(&mut Element),
 ) -> DetachedNode
 where
-    Element: CreateElement,
-    Element::Kind: crate::element::CanContainChildren<Element>,
+    Element: crate::element::CanHaveChildren,
 {
-    detached_node(crate::element::Scope::new_with(element, scope))
+    let scope_elem = crate::element::Scope::new_with(element, scope);
+    let children = scope_elem.children.clone();
+    let parent = detached_node(scope_elem);
+    with_caaqi_ctx(|ctx| {
+        for child in children {
+            ctx.commands.entity(child.entity()).insert(
+                crate::node_components::tree::CaaqiUiChildOf(parent.entity()),
+            );
+        }
+    });
+    parent
 }
 
 pub fn node_scope_with<Element>(element: Element, scope: impl FnOnce(&mut Element))
 where
-    Element: CreateElement,
-    Element::Kind: crate::element::CanContainChildren<Element>,
+    Element: crate::element::CanHaveChildren,
 {
-    node(crate::element::Scope::new_with(element, scope))
+    node(scope_with(element, scope));
 }

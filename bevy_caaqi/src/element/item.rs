@@ -1,9 +1,8 @@
 use bevy_vello::vello::peniko;
 
-use crate::node_components::{Drawing, Positioning, Sizing};
+use super::{CanHaveChildren, IntoNodeBundle};
 use crate::node_components::positioning::Direction;
-use crate::context::{CaaqiCtx, DetachedNode};
-use super::{CreateElement, Container, IntoNodeBundle};
+use crate::node_components::{Drawing, Positioning, Sizing};
 
 #[derive(Debug, Clone)]
 pub struct Item {
@@ -144,46 +143,10 @@ impl Item {
         self.margin_bottom = bottom;
         self
     }
-
-}
-
-impl CreateElement for Item {
-    type Kind = Container;
-
-    fn insert_element(self, ctx: &mut CaaqiCtx) -> DetachedNode {
-        DetachedNode(
-            ctx.commands
-                .spawn((
-                    crate::node_components::CaaqiNode,
-                    Sizing {
-                        inner_width: self.width,
-                        inner_height: self.height,
-                        margin_bottom: self.margin_bottom,
-                        margin_left: self.margin_left,
-                        margin_right: self.margin_right,
-                        margin_top: self.margin_top,
-                        padding_bottom: self.padding_bottom,
-                        padding_left: self.padding_left,
-                        padding_right: self.padding_right,
-                        padding_top: self.padding_top,
-                        ..Default::default()
-                    },
-                    Drawing { color: self.color },
-                    Positioning {
-                        main_axis: self.main_axis,
-                        ..Default::default()
-                    },
-                ))
-                .id(),
-        )
-    }
 }
 
 impl IntoNodeBundle for Item {
-    fn into_node_bundle(
-        self,
-        _ctx: &mut crate::context::CaaqiCtx,
-    ) -> impl bevy::prelude::Bundle {
+    fn into_node_bundle(self, _ctx: &mut crate::context::CaaqiCtx) -> impl bevy::prelude::Bundle {
         (
             Sizing {
                 inner_width: self.width,
@@ -206,3 +169,5 @@ impl IntoNodeBundle for Item {
         )
     }
 }
+
+impl CanHaveChildren for Item {}
