@@ -1,5 +1,3 @@
-pub mod component;
-
 use bevy::prelude::*;
 use bevy::ecs::system::Commands;
 use smallvec::SmallVec;
@@ -34,6 +32,37 @@ impl<'w, 's> CaaqiCtx<'w, 's> {
             commands,
             attached_nodes: Default::default(),
         }
+    }
+
+    /// Create a node from an element that implements `IntoNodeBundle`.
+    /// This is the primary method for node creation; it ensures exactly one
+    /// entity is spawned with the marker component.
+    pub fn create_node<E>(&mut self, element: E) -> DetachedNode
+    where
+        E: crate::element::IntoNodeBundle,
+    {
+        let bundle = element.into_node_bundle(self);
+        DetachedNode(
+            self.commands
+                .spawn((crate::node_components::CaaqiNode, bundle))
+                .id(),
+        )
+    }
+
+    /// Attach child nodes to a parent node, establishing parent-child relationships.
+    /// This method consumes both the parent and all children, preventing reuse
+    /// and ensuring each child is attached exactly once.
+    pub fn attach_children(
+        &mut self,
+        parent: DetachedNode,
+        children: impl IntoIterator<Item = DetachedNode>,
+    ) -> DetachedNode {
+        for child in children {
+            self.commands
+                .entity(child.entity())
+                .insert(crate::node_components::tree::CaaqiUiChildOf(parent.entity()));
+        }
+        parent
     }
 }
 

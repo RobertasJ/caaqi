@@ -1,9 +1,9 @@
 use bevy_vello::vello::peniko;
 
-use crate::node_components::{Drawing, Positioning, Sizing, CaaqiNode};
+use crate::node_components::{Drawing, Positioning, Sizing};
 use crate::node_components::positioning::Direction;
 use crate::context::{CaaqiCtx, DetachedNode};
-use super::{CreateElement, Container};
+use super::{CreateElement, Container, IntoNodeBundle};
 
 #[derive(Debug, Clone)]
 pub struct Item {
@@ -145,6 +145,7 @@ impl Item {
         self
     }
 
+    #[inline]
     pub fn to_bundle(&self) -> (Sizing, Drawing, Positioning) {
         (
             Sizing {
@@ -176,8 +177,17 @@ impl CreateElement for Item {
         let (sizing, drawing, positioning) = self.to_bundle();
         DetachedNode(
             ctx.commands
-                .spawn((CaaqiNode, sizing, drawing, positioning))
+                .spawn((crate::node_components::CaaqiNode, sizing, drawing, positioning))
                 .id(),
         )
+    }
+}
+
+impl IntoNodeBundle for Item {
+    fn into_node_bundle(
+        self,
+        _ctx: &mut crate::context::CaaqiCtx,
+    ) -> impl bevy::prelude::Bundle {
+        self.to_bundle()
     }
 }
