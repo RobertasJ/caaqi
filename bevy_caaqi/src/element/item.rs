@@ -145,8 +145,45 @@ impl Item {
         self
     }
 
-    #[inline]
-    pub fn to_bundle(&self) -> (Sizing, Drawing, Positioning) {
+}
+
+impl CreateElement for Item {
+    type Kind = Container;
+
+    fn insert_element(self, ctx: &mut CaaqiCtx) -> DetachedNode {
+        DetachedNode(
+            ctx.commands
+                .spawn((
+                    crate::node_components::CaaqiNode,
+                    Sizing {
+                        inner_width: self.width,
+                        inner_height: self.height,
+                        margin_bottom: self.margin_bottom,
+                        margin_left: self.margin_left,
+                        margin_right: self.margin_right,
+                        margin_top: self.margin_top,
+                        padding_bottom: self.padding_bottom,
+                        padding_left: self.padding_left,
+                        padding_right: self.padding_right,
+                        padding_top: self.padding_top,
+                        ..Default::default()
+                    },
+                    Drawing { color: self.color },
+                    Positioning {
+                        main_axis: self.main_axis,
+                        ..Default::default()
+                    },
+                ))
+                .id(),
+        )
+    }
+}
+
+impl IntoNodeBundle for Item {
+    fn into_node_bundle(
+        self,
+        _ctx: &mut crate::context::CaaqiCtx,
+    ) -> impl bevy::prelude::Bundle {
         (
             Sizing {
                 inner_width: self.width,
@@ -167,27 +204,5 @@ impl Item {
                 ..Default::default()
             },
         )
-    }
-}
-
-impl CreateElement for Item {
-    type Kind = Container;
-
-    fn insert_element(self, ctx: &mut CaaqiCtx) -> DetachedNode {
-        let (sizing, drawing, positioning) = self.to_bundle();
-        DetachedNode(
-            ctx.commands
-                .spawn((crate::node_components::CaaqiNode, sizing, drawing, positioning))
-                .id(),
-        )
-    }
-}
-
-impl IntoNodeBundle for Item {
-    fn into_node_bundle(
-        self,
-        _ctx: &mut crate::context::CaaqiCtx,
-    ) -> impl bevy::prelude::Bundle {
-        self.to_bundle()
     }
 }
