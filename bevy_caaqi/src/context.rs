@@ -9,13 +9,13 @@ use crate::{context::scope::SCOPING, element::CanHaveChildren};
 
 pub use scope::{DetachedNode, attach_node};
 
-pub struct CaaqiCtx<'w, 's> {
+pub struct NodeCreationCtx<'w, 's> {
     pub(crate) commands: Commands<'w, 's>,
 }
 
-scoped_thread_local::scoped_thread_local!(static CTX: CaaqiCtx<'_, '_>);
+scoped_thread_local::scoped_thread_local!(static CTX: NodeCreationCtx<'_, '_>);
 
-impl<'w, 's> CaaqiCtx<'w, 's> {
+impl<'w, 's> NodeCreationCtx<'w, 's> {
     pub fn new(commands: Commands<'w, 's>) -> Self {
         Self { commands }
     }
@@ -50,15 +50,15 @@ impl<'w, 's> CaaqiCtx<'w, 's> {
     }
 }
 
-pub fn enter_caaqi_ctx<R>(ctx: &mut CaaqiCtx, scope: impl FnOnce() -> R) -> R {
+pub fn enter_caaqi_ctx<R>(ctx: &mut NodeCreationCtx, scope: impl FnOnce() -> R) -> R {
     CTX.set(ctx, || SCOPING.set(&mut scope::Tree::default(), scope))
 }
 
-pub fn with_caaqi_ctx<R>(scope: impl FnOnce(&mut CaaqiCtx) -> R) -> R {
+pub fn with_caaqi_ctx<R>(scope: impl FnOnce(&mut NodeCreationCtx) -> R) -> R {
     CTX.with(scope)
 }
 
-pub fn node_detached_with<El: Element>(
+pub fn detached_node_with<El: Element>(
     mut element: El,
     build: impl FnOnce(&mut El),
 ) -> DetachedNode {
@@ -67,19 +67,19 @@ pub fn node_detached_with<El: Element>(
     CTX.with(|ctx| element.into_ui_node(ctx))
 }
 
-pub fn node_detached<El: Element + Default>(build: impl FnOnce(&mut El)) -> DetachedNode {
-    node_detached_with(El::default(), build)
-}
-
-pub fn node<El: Element + Default>(build: impl FnOnce(&mut El)) {
-    attach_node(node_detached(build));
+pub fn detached_node<El: Element + Default>(build: impl FnOnce(&mut El)) -> DetachedNode {
+    detached_node_with(El::default(), build)
 }
 
 pub fn node_with<El: Element>(element: El, build: impl FnOnce(&mut El)) {
-    attach_node(node_detached_with(element, build));
+    attach_node(detached_node_with(element, build));
 }
 
-pub fn node_scoped_detached_with<El: CanHaveChildren>(
+pub fn node<El: Element + Default>(build: impl FnOnce(&mut El)) {
+    attach_node(detached_node(build));
+}
+
+pub fn detached_scope_with<El: CanHaveChildren>(
     mut element: El,
     build: impl FnOnce(&mut El),
 ) -> DetachedNode {
@@ -90,16 +90,14 @@ pub fn node_scoped_detached_with<El: CanHaveChildren>(
     CTX.with(|ctx| El::add_children(element.into_ui_node(ctx), ctx, children))
 }
 
-pub fn node_scoped_detached<El: CanHaveChildren + Default>(
-    build: impl FnOnce(&mut El),
-) -> DetachedNode {
-    node_scoped_detached_with(El::default(), build)
+pub fn detached_scope<El: CanHaveChildren + Default>(build: impl FnOnce(&mut El)) -> DetachedNode {
+    detached_scope_with(El::default(), build)
 }
 
-pub fn node_scoped_with<El: CanHaveChildren>(element: El, build: impl FnOnce(&mut El)) {
-    attach_node(node_scoped_detached_with(element, build));
+pub fn scope_with<El: CanHaveChildren>(element: El, build: impl FnOnce(&mut El)) {
+    attach_node(detached_scope_with(element, build));
 }
 
-pub fn node_scoped<El: CanHaveChildren + Default>(build: impl FnOnce(&mut El)) {
-    attach_node(node_scoped_detached(build));
+pub fn scope<El: CanHaveChildren + Default>(build: impl FnOnce(&mut El)) {
+    attach_node(detached_scope(build));
 }

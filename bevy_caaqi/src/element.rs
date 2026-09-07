@@ -4,14 +4,14 @@ pub use item::Item;
 use smallvec::SmallVec;
 
 use crate::{
-    context::{CaaqiCtx, DetachedNode},
+    context::{DetachedNode, NodeCreationCtx},
     node_components::tree::CaaqiUiChildOf,
 };
 
 /// Marker trait for element types that can be created as UI nodes.
 pub trait Element {
     /// Convert the element into a UI node bundle.
-    fn into_ui_node(self, ctx: &mut CaaqiCtx) -> DetachedNode;
+    fn into_ui_node(self, ctx: &mut NodeCreationCtx) -> DetachedNode;
 }
 
 /// Marker trait for element types that can contain children.
@@ -24,7 +24,7 @@ pub trait Element {
 pub trait CanHaveChildren: Element {
     fn add_children(
         element: DetachedNode,
-        ctx: &mut CaaqiCtx,
+        ctx: &mut NodeCreationCtx,
         children: SmallVec<[DetachedNode; 1]>,
     ) -> DetachedNode {
         for child in children {

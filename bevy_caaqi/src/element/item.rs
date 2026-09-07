@@ -1,7 +1,7 @@
 use bevy_vello::vello::peniko;
 
 use super::{CanHaveChildren, Element};
-use crate::context::{CaaqiCtx, DetachedNode};
+use crate::context::{DetachedNode, NodeCreationCtx};
 use crate::node_components::positioning::Direction;
 use crate::node_components::{Drawing, Positioning, Sizing};
 
@@ -45,109 +45,91 @@ impl Item {
         Self::default()
     }
 
-    pub fn color(&mut self, color: peniko::Color) -> &mut Self {
+    pub fn color(&mut self, color: peniko::Color) {
         self.color = color;
-        self
     }
 
-    pub fn width(&mut self, width: f64) -> &mut Self {
+    pub fn width(&mut self, width: f64) {
         self.width = Some(width);
-        self
     }
 
-    pub fn height(&mut self, height: f64) -> &mut Self {
+    pub fn height(&mut self, height: f64) {
         self.height = Some(height);
-        self
     }
 
-    pub fn main_axis(&mut self, main_axis: Direction) -> &mut Self {
+    pub fn main_axis(&mut self, main_axis: Direction) {
         self.main_axis = main_axis;
-        self
     }
 
-    pub fn padding(&mut self, top: f64, bottom: f64, left: f64, right: f64) -> &mut Self {
+    pub fn padding_all(&mut self, padding: f64) {
+        self.padding_top = padding;
+        self.padding_bottom = padding;
+        self.padding_left = padding;
+        self.padding_right = padding;
+    }
+
+    pub fn padding_top(&mut self, top: f64) {
         self.padding_top = top;
+    }
+
+    pub fn padding_bottom(&mut self, bottom: f64) {
         self.padding_bottom = bottom;
+    }
+
+    pub fn padding_left(&mut self, left: f64) {
+        self.padding_left = left;
+    }
+
+    pub fn padding_right(&mut self, right: f64) {
+        self.padding_right = right;
+    }
+
+    pub fn padding_horizontal(&mut self, left: f64, right: f64) {
         self.padding_left = left;
         self.padding_right = right;
-        self
     }
 
-    pub fn padding_top(&mut self, top: f64) -> &mut Self {
-        self.padding_top = top;
-        self
-    }
-
-    pub fn padding_bottom(&mut self, bottom: f64) -> &mut Self {
-        self.padding_bottom = bottom;
-        self
-    }
-
-    pub fn padding_left(&mut self, left: f64) -> &mut Self {
-        self.padding_left = left;
-        self
-    }
-
-    pub fn padding_right(&mut self, right: f64) -> &mut Self {
-        self.padding_right = right;
-        self
-    }
-
-    pub fn padding_horizontal(&mut self, left: f64, right: f64) -> &mut Self {
-        self.padding_left = left;
-        self.padding_right = right;
-        self
-    }
-
-    pub fn padding_vertical(&mut self, top: f64, bottom: f64) -> &mut Self {
+    pub fn padding_vertical(&mut self, top: f64, bottom: f64) {
         self.padding_top = top;
         self.padding_bottom = bottom;
-        self
     }
 
-    pub fn margin(&mut self, top: f64, bottom: f64, left: f64, right: f64) -> &mut Self {
+    pub fn margin_all(&mut self, margin: f64) {
+        self.margin_top = margin;
+        self.margin_bottom = margin;
+        self.margin_left = margin;
+        self.margin_right = margin;
+    }
+
+    pub fn margin_top(&mut self, top: f64) {
         self.margin_top = top;
+    }
+
+    pub fn margin_bottom(&mut self, bottom: f64) {
         self.margin_bottom = bottom;
+    }
+
+    pub fn margin_left(&mut self, left: f64) {
+        self.margin_left = left;
+    }
+
+    pub fn margin_right(&mut self, right: f64) {
+        self.margin_right = right;
+    }
+
+    pub fn margin_horizontal(&mut self, left: f64, right: f64) {
         self.margin_left = left;
         self.margin_right = right;
-        self
     }
 
-    pub fn margin_top(&mut self, top: f64) -> &mut Self {
-        self.margin_top = top;
-        self
-    }
-
-    pub fn margin_bottom(&mut self, bottom: f64) -> &mut Self {
-        self.margin_bottom = bottom;
-        self
-    }
-
-    pub fn margin_left(&mut self, left: f64) -> &mut Self {
-        self.margin_left = left;
-        self
-    }
-
-    pub fn margin_right(&mut self, right: f64) -> &mut Self {
-        self.margin_right = right;
-        self
-    }
-
-    pub fn margin_horizontal(&mut self, left: f64, right: f64) -> &mut Self {
-        self.margin_left = left;
-        self.margin_right = right;
-        self
-    }
-
-    pub fn margin_vertical(&mut self, top: f64, bottom: f64) -> &mut Self {
+    pub fn margin_vertical(&mut self, top: f64, bottom: f64) {
         self.margin_top = top;
         self.margin_bottom = bottom;
-        self
     }
 }
 
 impl Element for Item {
-    fn into_ui_node(self, ctx: &mut CaaqiCtx) -> DetachedNode {
+    fn into_ui_node(self, ctx: &mut NodeCreationCtx) -> DetachedNode {
         ctx.create_node((
             Sizing {
                 inner_width: self.width,
