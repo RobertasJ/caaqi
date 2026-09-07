@@ -1,13 +1,15 @@
 pub mod item;
-pub mod scope;
 
 pub use item::Item;
-pub use scope::Scope;
+use smallvec::SmallVec;
 
-use crate::context::{CaaqiCtx, DetachedNode};
+use crate::{
+    context::{CaaqiCtx, DetachedNode},
+    node_components::tree::CaaqiUiChildOf,
+};
 
 /// Marker trait for element types that can be created as UI nodes.
-pub trait IntoUiNode {
+pub trait Element {
     /// Convert the element into a UI node bundle.
     fn into_ui_node(self, ctx: &mut CaaqiCtx) -> DetachedNode;
 }
@@ -19,4 +21,18 @@ pub trait IntoUiNode {
     label = "this element kind does not allow children",
     note = "implement `CanHaveChildren` to allow this element to contain children"
 )]
-pub trait CanHaveChildren: IntoUiNode {}
+pub trait CanHaveChildren: Element {
+    fn add_children(
+        element: DetachedNode,
+        ctx: &mut CaaqiCtx,
+        children: SmallVec<[DetachedNode; 1]>,
+    ) -> DetachedNode {
+        for child in children {
+            ctx.commands
+                .entity(child.entity())
+                .insert(CaaqiUiChildOf(element.entity()));
+        }
+
+        element
+    }
+}
