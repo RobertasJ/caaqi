@@ -1,7 +1,9 @@
+use bevy::ecs::entity::Entity;
 use bevy_vello::vello::peniko;
 
 use super::{CanHaveChildren, Element};
 use crate::context::{DetachedNode, WorldContext};
+use crate::element::ElementMutator;
 use crate::node_components::positioning::Direction;
 use crate::node_components::{Drawing, Positioning, Sizing};
 
@@ -129,8 +131,10 @@ impl Item {
 }
 
 impl Element for Item {
+    type Mutator = ItemMutator;
+
     fn into_ui_node(self, ctx: &mut WorldContext) -> DetachedNode {
-        ctx.create_node((
+        ctx.create_element_node((
             Sizing {
                 inner_width: self.width,
                 inner_height: self.height,
@@ -154,3 +158,195 @@ impl Element for Item {
 }
 
 impl CanHaveChildren for Item {}
+
+pub struct ItemMutator {
+    entity: Entity,
+}
+
+impl ItemMutator {
+    pub fn color(&mut self, color: peniko::Color) {
+        WorldContext::with(|ctx| {
+            ctx.world
+                .entity_mut(self.entity)
+                .get_components_mut::<&mut Drawing>()
+                .unwrap()
+                .color = color;
+        });
+    }
+
+    pub fn width(&mut self, width: f64) {
+        WorldContext::with(|ctx| {
+            ctx.world
+                .entity_mut(self.entity)
+                .get_components_mut::<&mut Sizing>()
+                .unwrap()
+                .inner_width = Some(width);
+        });
+    }
+
+    pub fn height(&mut self, height: f64) {
+        WorldContext::with(|ctx| {
+            ctx.world
+                .entity_mut(self.entity)
+                .get_components_mut::<&mut Sizing>()
+                .unwrap()
+                .inner_height = Some(height);
+        });
+    }
+
+    pub fn main_axis(&mut self, main_axis: Direction) {
+        WorldContext::with(|ctx| {
+            ctx.world
+                .entity_mut(self.entity)
+                .get_components_mut::<&mut Positioning>()
+                .unwrap()
+                .main_axis = main_axis;
+        });
+    }
+
+    pub fn padding_all(&mut self, padding: f64) {
+        WorldContext::with(|ctx| {
+            let mut binding = ctx.world.entity_mut(self.entity);
+            let mut sizing = binding.get_components_mut::<&mut Sizing>().unwrap();
+            sizing.padding_top = padding;
+            sizing.padding_bottom = padding;
+            sizing.padding_left = padding;
+            sizing.padding_right = padding;
+        });
+    }
+
+    pub fn padding_horizontal(&mut self, left: f64, right: f64) {
+        WorldContext::with(|ctx| {
+            let mut binding = ctx.world.entity_mut(self.entity);
+            let mut sizing = binding.get_components_mut::<&mut Sizing>().unwrap();
+            sizing.padding_left = left;
+            sizing.padding_right = right;
+        });
+    }
+
+    pub fn padding_vertical(&mut self, top: f64, bottom: f64) {
+        WorldContext::with(|ctx| {
+            let mut binding = ctx.world.entity_mut(self.entity);
+            let mut sizing = binding.get_components_mut::<&mut Sizing>().unwrap();
+            sizing.padding_top = top;
+            sizing.padding_bottom = bottom;
+        });
+    }
+
+    pub fn margin_all(&mut self, margin: f64) {
+        WorldContext::with(|ctx| {
+            let mut binding = ctx.world.entity_mut(self.entity);
+            let mut sizing = binding.get_components_mut::<&mut Sizing>().unwrap();
+            sizing.margin_top = margin;
+            sizing.margin_bottom = margin;
+            sizing.margin_left = margin;
+            sizing.margin_right = margin;
+        });
+    }
+
+    pub fn margin_horizontal(&mut self, left: f64, right: f64) {
+        WorldContext::with(|ctx| {
+            let mut binding = ctx.world.entity_mut(self.entity);
+            let mut sizing = binding.get_components_mut::<&mut Sizing>().unwrap();
+            sizing.margin_left = left;
+            sizing.margin_right = right;
+        });
+    }
+
+    pub fn margin_vertical(&mut self, top: f64, bottom: f64) {
+        WorldContext::with(|ctx| {
+            let mut binding = ctx.world.entity_mut(self.entity);
+            let mut sizing = binding.get_components_mut::<&mut Sizing>().unwrap();
+            sizing.margin_top = top;
+            sizing.margin_bottom = bottom;
+        });
+    }
+
+    fn padding_top(&mut self, top: f64) {
+        WorldContext::with(|ctx| {
+            ctx.world
+                .entity_mut(self.entity)
+                .get_components_mut::<&mut Sizing>()
+                .unwrap()
+                .padding_top = top;
+        });
+    }
+
+    fn padding_bottom(&mut self, bottom: f64) {
+        WorldContext::with(|ctx| {
+            ctx.world
+                .entity_mut(self.entity)
+                .get_components_mut::<&mut Sizing>()
+                .unwrap()
+                .padding_bottom = bottom;
+        });
+    }
+
+    fn padding_left(&mut self, left: f64) {
+        WorldContext::with(|ctx| {
+            ctx.world
+                .entity_mut(self.entity)
+                .get_components_mut::<&mut Sizing>()
+                .unwrap()
+                .padding_left = left;
+        });
+    }
+
+    fn padding_right(&mut self, right: f64) {
+        WorldContext::with(|ctx| {
+            ctx.world
+                .entity_mut(self.entity)
+                .get_components_mut::<&mut Sizing>()
+                .unwrap()
+                .padding_right = right;
+        });
+    }
+
+    fn margin_top(&mut self, top: f64) {
+        WorldContext::with(|ctx| {
+            ctx.world
+                .entity_mut(self.entity)
+                .get_components_mut::<&mut Sizing>()
+                .unwrap()
+                .margin_top = top;
+        });
+    }
+
+    fn margin_bottom(&mut self, bottom: f64) {
+        WorldContext::with(|ctx| {
+            ctx.world
+                .entity_mut(self.entity)
+                .get_components_mut::<&mut Sizing>()
+                .unwrap()
+                .margin_bottom = bottom;
+        });
+    }
+
+    fn margin_left(&mut self, left: f64) {
+        WorldContext::with(|ctx| {
+            ctx.world
+                .entity_mut(self.entity)
+                .get_components_mut::<&mut Sizing>()
+                .unwrap()
+                .margin_left = left;
+        });
+    }
+
+    fn margin_right(&mut self, right: f64) {
+        WorldContext::with(|ctx| {
+            ctx.world
+                .entity_mut(self.entity)
+                .get_components_mut::<&mut Sizing>()
+                .unwrap()
+                .margin_right = right;
+        });
+    }
+}
+
+impl From<Entity> for ItemMutator {
+    fn from(entity: Entity) -> Self {
+        Self { entity }
+    }
+}
+
+impl ElementMutator for ItemMutator {}

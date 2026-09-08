@@ -13,7 +13,9 @@ pub use bevy_vello::vello::peniko::Color;
 
 use crate::{
     context::DetachedNode,
-    node_components::{CaaqiNode, Computed, Drawing, Positioning, Sizing, positioning::Direction},
+    node_components::{
+        Computed, Drawing, ElementNode, Positioning, Sizing, positioning::Direction,
+    },
 };
 
 #[derive(Debug, Default, Component)]
@@ -62,7 +64,7 @@ impl Plugin for CaaqiPlugin {
     }
 }
 
-fn ui_changed(nodes: Query<Entity, (With<CaaqiNode>, Without<Computed>)>) -> bool {
+fn ui_changed(nodes: Query<Entity, (With<ElementNode>, Without<Computed>)>) -> bool {
     !nodes.is_empty()
 }
 
@@ -72,17 +74,17 @@ fn window_changed(windows: Query<Entity, Changed<Window>>) -> bool {
 
 fn size_uis(
     mut scenes: Query<&CaaqiUiRoot, With<CaaqiUi>>,
-    mut tree: Query<(Option<&Children>, Option<&ChildOf>), With<CaaqiNode>>,
-    mut sizings: Query<&mut Sizing, With<CaaqiNode>>,
-    positionings: Query<&Positioning, With<CaaqiNode>>,
+    mut tree: Query<(Option<&Children>, Option<&ChildOf>), With<ElementNode>>,
+    mut sizings: Query<&mut Sizing, With<ElementNode>>,
+    positionings: Query<&Positioning, With<ElementNode>>,
     window: Single<&Window>,
 ) {
     for CaaqiUiRoot(DetachedNode(root)) in &mut scenes {
         fn bottom_up_traverse(
             node: Entity,
-            tree: &Query<(Option<&Children>, Option<&ChildOf>), With<CaaqiNode>>,
-            sizings: &mut Query<&mut Sizing, With<CaaqiNode>>,
-            positionings: &Query<&Positioning, With<CaaqiNode>>,
+            tree: &Query<(Option<&Children>, Option<&ChildOf>), With<ElementNode>>,
+            sizings: &mut Query<&mut Sizing, With<ElementNode>>,
+            positionings: &Query<&Positioning, With<ElementNode>>,
         ) -> Sizing {
             let positioning = positionings.get(node).unwrap();
             let sizing = sizings.get(node).unwrap();
@@ -125,17 +127,17 @@ fn size_uis(
 
 fn position_uis(
     mut scenes: Query<&CaaqiUiRoot, With<CaaqiUi>>,
-    mut tree: Query<(Option<&Children>, Option<&ChildOf>), With<CaaqiNode>>,
-    mut positionings: Query<&mut Positioning, With<CaaqiNode>>,
-    sizings: Query<&Sizing, With<CaaqiNode>>,
+    mut tree: Query<(Option<&Children>, Option<&ChildOf>), With<ElementNode>>,
+    mut positionings: Query<&mut Positioning, With<ElementNode>>,
+    sizings: Query<&Sizing, With<ElementNode>>,
     window: Single<&Window>,
 ) {
     for CaaqiUiRoot(DetachedNode(root)) in &mut scenes {
         fn top_down_traverse(
             node: Entity,
-            tree: &Query<(Option<&Children>, Option<&ChildOf>), With<CaaqiNode>>,
-            positionings: &mut Query<&mut Positioning, With<CaaqiNode>>,
-            sizings: &Query<&Sizing, With<CaaqiNode>>,
+            tree: &Query<(Option<&Children>, Option<&ChildOf>), With<ElementNode>>,
+            positionings: &mut Query<&mut Positioning, With<ElementNode>>,
+            sizings: &Query<&Sizing, With<ElementNode>>,
             position_x: f64,
             position_y: f64,
         ) -> Sizing {
@@ -188,7 +190,7 @@ fn move_ui_to_origin(
 
 fn draw_uis(
     mut scenes: Query<(&mut Transform, &mut VelloScene2d, &CaaqiUiRoot), With<CaaqiUi>>,
-    nodes: Query<(&Drawing, &Sizing, &Positioning, Option<&Children>), With<CaaqiNode>>,
+    nodes: Query<(&Drawing, &Sizing, &Positioning, Option<&Children>), With<ElementNode>>,
     window: Single<&Window>,
 ) {
     for (mut transform, mut scene, CaaqiUiRoot(DetachedNode(root))) in &mut scenes {
@@ -196,7 +198,7 @@ fn draw_uis(
 
         fn recursive_draw(
             node: Entity,
-            nodes: &Query<(&Drawing, &Sizing, &Positioning, Option<&Children>), With<CaaqiNode>>,
+            nodes: &Query<(&Drawing, &Sizing, &Positioning, Option<&Children>), With<ElementNode>>,
             scene: &mut VelloScene2d,
         ) {
             let (drawing, sizing, positioning, children) = nodes.get(node).unwrap();

@@ -1,16 +1,20 @@
 pub mod item;
 
-use bevy::ecs::hierarchy::ChildOf;
+use bevy::ecs::{entity::Entity, hierarchy::ChildOf};
 pub use item::Item;
 use smallvec::SmallVec;
 
 use crate::context::{DetachedNode, WorldContext};
 
 /// Marker trait for element types that can be created as UI nodes.
-pub trait Element {
+pub trait Element: Send + Sync + 'static {
+    type Mutator: ElementMutator;
+
     /// Convert the element into a UI node bundle.
     fn into_ui_node(self, ctx: &mut WorldContext) -> DetachedNode;
 }
+
+pub trait ElementMutator: From<Entity> {}
 
 /// Marker trait for element types that can contain children.
 /// Used to enforce at compile-time that only container elements can have children in scopes.
