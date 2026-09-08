@@ -1,3 +1,4 @@
+pub mod context_builder;
 pub mod item;
 pub mod node;
 
@@ -5,7 +6,7 @@ use bevy::ecs::{entity::Entity, hierarchy::ChildOf};
 pub use item::Item;
 use smallvec::SmallVec;
 
-use crate::context::{DetachedNode, WorldContext};
+use crate::{context_tree_builder::DetachedNode, world_context::WorldContext};
 
 /// Marker trait for element types that can be created as UI nodes.
 pub trait Element: Send + Sync + 'static {
@@ -29,7 +30,7 @@ pub trait CanHaveChildren: Element {
         children: SmallVec<[DetachedNode; 1]>,
     ) -> DetachedNode {
         for child in children {
-            ctx.world.entity_mut(*child).insert(ChildOf(*element));
+            ctx.entity_mut(*child).insert(ChildOf(*element));
         }
 
         element

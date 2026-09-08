@@ -1,5 +1,7 @@
-pub mod context;
+mod context_tree_builder;
+pub mod decision;
 pub mod element;
+pub mod world_context;
 
 use bevy::{camera::visibility::NoFrustumCulling, prelude::*};
 use bevy_vello::{
@@ -11,7 +13,7 @@ use bevy_vello::{
 pub use bevy_vello::vello::peniko::Color;
 
 use crate::{
-    context::DetachedNode,
+    context_tree_builder::DetachedNode,
     element::node::{Computed, Drawing, ElementNode, Positioning, Sizing, positioning::Direction},
 };
 
