@@ -4,8 +4,8 @@ use bevy_vello::vello::peniko;
 use super::{CanHaveChildren, Element};
 use crate::context::{DetachedNode, WorldContext};
 use crate::element::ElementMutator;
-use crate::node_components::positioning::Direction;
-use crate::node_components::{Drawing, Positioning, Sizing};
+use crate::element::node::positioning::Direction;
+use crate::element::node::{Drawing, Positioning, Sizing};
 
 #[derive(Debug, Clone)]
 pub struct Item {
@@ -131,8 +131,6 @@ impl Item {
 }
 
 impl Element for Item {
-    type Mutator = ItemMutator;
-
     fn into_ui_node(self, ctx: &mut WorldContext) -> DetachedNode {
         ctx.create_element_node((
             Sizing {

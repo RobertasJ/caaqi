@@ -1,6 +1,5 @@
 pub mod context;
 pub mod element;
-pub mod node_components;
 
 use bevy::{camera::visibility::NoFrustumCulling, prelude::*};
 use bevy_vello::{
@@ -13,9 +12,7 @@ pub use bevy_vello::vello::peniko::Color;
 
 use crate::{
     context::DetachedNode,
-    node_components::{
-        Computed, Drawing, ElementNode, Positioning, Sizing, positioning::Direction,
-    },
+    element::node::{Computed, Drawing, ElementNode, Positioning, Sizing, positioning::Direction},
 };
 
 #[derive(Debug, Default, Component)]

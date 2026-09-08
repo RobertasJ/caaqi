@@ -6,7 +6,7 @@ use bevy_vello::{integrations::scene::VelloScene2d, render::VelloView};
 use bevy_caaqi::context::{detached_scope, node, scope};
 use bevy_caaqi::{
     CaaqiPlugin, CaaqiUi, CaaqiUiRoot, context::WorldContext, element::Item,
-    node_components::positioning::Direction,
+    element::node::positioning::Direction,
 };
 
 fn main() {
