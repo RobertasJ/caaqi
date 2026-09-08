@@ -1,23 +1,21 @@
 mod scope;
 
-use bevy::ecs::system::Commands;
 use bevy::prelude::*;
-use smallvec::SmallVec;
 
+use crate::element::CanHaveChildren;
 use crate::element::Element;
-use crate::{context::scope::SCOPING, element::CanHaveChildren};
 
 pub use scope::{DetachedNode, attach_node};
 
-pub struct NodeCreationCtx<'w, 's> {
-    pub(crate) commands: Commands<'w, 's>,
+pub struct WorldContext<'w> {
+    pub(crate) world: &'w mut World,
 }
 
-scoped_thread_local::scoped_thread_local!(static CTX: NodeCreationCtx<'_, '_>);
+scoped_thread_local::scoped_thread_local!(static CTX: WorldContext<'_>);
 
-impl<'w, 's> NodeCreationCtx<'w, 's> {
-    pub fn new(commands: Commands<'w, 's>) -> Self {
-        Self { commands }
+impl<'w> WorldContext<'w> {
+    pub fn new(world: &'w mut World) -> Self {
+        Self { world }
     }
 
     /// Create a node from a bundle.
@@ -27,7 +25,7 @@ impl<'w, 's> NodeCreationCtx<'w, 's> {
         B: Bundle,
     {
         DetachedNode::from_entity(
-            self.commands
+            self.world
                 .spawn((crate::node_components::CaaqiNode, bundle))
                 .id(),
         )
@@ -42,20 +40,18 @@ impl<'w, 's> NodeCreationCtx<'w, 's> {
         children: impl IntoIterator<Item = DetachedNode>,
     ) -> DetachedNode {
         for child in children {
-            self.commands.entity(child.entity()).insert(
-                crate::node_components::tree::CaaqiUiChildOf(parent.entity()),
-            );
+            self.world.entity_mut(*child).insert(ChildOf(*parent));
         }
         parent
     }
-}
 
-pub fn enter_caaqi_ctx<R>(ctx: &mut NodeCreationCtx, scope: impl FnOnce() -> R) -> R {
-    CTX.set(ctx, || SCOPING.set(&mut scope::Tree::default(), scope))
-}
+    pub fn enter<R>(&mut self, scope: impl FnOnce() -> R) -> R {
+        CTX.set(self, || scope())
+    }
 
-pub fn with_caaqi_ctx<R>(scope: impl FnOnce(&mut NodeCreationCtx) -> R) -> R {
-    CTX.with(scope)
+    pub fn with<R>(scope: impl FnOnce(&mut WorldContext) -> R) -> R {
+        CTX.with(scope)
+    }
 }
 
 pub fn detached_node_with<El: Element>(
@@ -64,7 +60,7 @@ pub fn detached_node_with<El: Element>(
 ) -> DetachedNode {
     build(&mut element);
 
-    CTX.with(|ctx| element.into_ui_node(ctx))
+    WorldContext::with(|ctx| element.into_ui_node(ctx))
 }
 
 pub fn detached_node<El: Element + Default>(build: impl FnOnce(&mut El)) -> DetachedNode {
@@ -87,7 +83,7 @@ pub fn detached_scope_with<El: CanHaveChildren>(
         build(&mut element);
     });
 
-    CTX.with(|ctx| El::add_children(element.into_ui_node(ctx), ctx, children))
+    WorldContext::with(|ctx| El::add_children(element.into_ui_node(ctx), ctx, children))
 }
 
 pub fn detached_scope<El: CanHaveChildren + Default>(build: impl FnOnce(&mut El)) -> DetachedNode {

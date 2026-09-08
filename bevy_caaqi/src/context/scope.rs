@@ -1,40 +1,73 @@
-use bevy::ecs::entity::Entity;
+use bevy::{
+    ecs::{entity::Entity, resource::Resource},
+    prelude::Deref,
+};
 use smallvec::SmallVec;
 
-#[derive(Debug, Default)]
-pub struct Tree {
-    attached_nodes: SmallVec<[DetachedNode; 1]>,
-}
+use crate::context::WorldContext;
 
-scoped_thread_local::scoped_thread_local!(pub static SCOPING: Tree);
+#[derive(Debug, Default, PartialEq, Eq, Resource)]
+struct AttachedNodes(pub(crate) SmallVec<[DetachedNode; 1]>);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash, Deref)]
 pub struct DetachedNode(pub(crate) Entity);
 
 impl DetachedNode {
-    pub fn into_entity(self) -> Entity {
-        self.0
-    }
-
-    pub(crate) fn entity(&self) -> Entity {
-        self.0
-    }
-
     pub(crate) fn from_entity(entity: Entity) -> Self {
         Self(entity)
     }
 }
 
 pub fn scope(scope: impl FnOnce()) -> SmallVec<[DetachedNode; 1]> {
-    let mut curr_attached = SCOPING.with(|tree| std::mem::take(&mut tree.attached_nodes));
+    let mut curr_attached = WorldContext::with(|ctx| {
+        std::mem::take(&mut ctx.world.get_resource_or_init::<AttachedNodes>().0)
+    });
 
     scope();
 
-    SCOPING.with(|tree| std::mem::swap(&mut curr_attached, &mut tree.attached_nodes));
+    WorldContext::with(|ctx| {
+        std::mem::swap(
+            &mut curr_attached,
+            &mut ctx.world.get_resource_or_init::<AttachedNodes>().0,
+        )
+    });
 
     curr_attached
 }
 
 pub fn attach_node(node: DetachedNode) {
-    SCOPING.with(|tree| tree.attached_nodes.push(node));
+    WorldContext::with(|ctx| {
+        ctx.world
+            .get_resource_or_init::<AttachedNodes>()
+            .0
+            .push(node)
+    });
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+    use bevy::prelude::*;
+
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Component)]
+    struct Num(pub i32);
+
+    #[test]
+    fn test_scope() {
+        let mut world = World::new();
+        let mut ctx = WorldContext::new(&mut world);
+
+        let nodes = ctx.enter(|| {
+            scope(|| {
+                attach_node(DetachedNode::from_entity(WorldContext::with(|ctx| {
+                    ctx.world.spawn(Num(42)).id()
+                })));
+                attach_node(DetachedNode::from_entity(WorldContext::with(|ctx| {
+                    ctx.world.spawn(Num(43)).id()
+                })));
+            })
+        });
+
+        assert_eq!(nodes.len(), 2);
+    }
 }

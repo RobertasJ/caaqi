@@ -13,9 +13,7 @@ pub use bevy_vello::vello::peniko::Color;
 
 use crate::{
     context::DetachedNode,
-    node_components::positioning::Direction,
-    node_components::tree::{CaaqiUiChildOf, CaaqiUiChildren},
-    node_components::{CaaqiNode, Drawing, Positioning, Sizing},
+    node_components::{CaaqiNode, Computed, Drawing, Positioning, Sizing, positioning::Direction},
 };
 
 #[derive(Debug, Default, Component)]
@@ -64,17 +62,7 @@ impl Plugin for CaaqiPlugin {
     }
 }
 
-fn ui_changed(
-    nodes: Query<
-        Entity,
-        (
-            With<CaaqiNode>,
-            Added<Drawing>,
-            Added<Positioning>,
-            Added<Sizing>,
-        ),
-    >,
-) -> bool {
+fn ui_changed(nodes: Query<Entity, (With<CaaqiNode>, Without<Computed>)>) -> bool {
     !nodes.is_empty()
 }
 
@@ -84,7 +72,7 @@ fn window_changed(windows: Query<Entity, Changed<Window>>) -> bool {
 
 fn size_uis(
     mut scenes: Query<&CaaqiUiRoot, With<CaaqiUi>>,
-    mut tree: Query<(Option<&CaaqiUiChildren>, Option<&CaaqiUiChildOf>), With<CaaqiNode>>,
+    mut tree: Query<(Option<&Children>, Option<&ChildOf>), With<CaaqiNode>>,
     mut sizings: Query<&mut Sizing, With<CaaqiNode>>,
     positionings: Query<&Positioning, With<CaaqiNode>>,
     window: Single<&Window>,
@@ -92,7 +80,7 @@ fn size_uis(
     for CaaqiUiRoot(DetachedNode(root)) in &mut scenes {
         fn bottom_up_traverse(
             node: Entity,
-            tree: &Query<(Option<&CaaqiUiChildren>, Option<&CaaqiUiChildOf>), With<CaaqiNode>>,
+            tree: &Query<(Option<&Children>, Option<&ChildOf>), With<CaaqiNode>>,
             sizings: &mut Query<&mut Sizing, With<CaaqiNode>>,
             positionings: &Query<&Positioning, With<CaaqiNode>>,
         ) -> Sizing {
@@ -137,7 +125,7 @@ fn size_uis(
 
 fn position_uis(
     mut scenes: Query<&CaaqiUiRoot, With<CaaqiUi>>,
-    mut tree: Query<(Option<&CaaqiUiChildren>, Option<&CaaqiUiChildOf>), With<CaaqiNode>>,
+    mut tree: Query<(Option<&Children>, Option<&ChildOf>), With<CaaqiNode>>,
     mut positionings: Query<&mut Positioning, With<CaaqiNode>>,
     sizings: Query<&Sizing, With<CaaqiNode>>,
     window: Single<&Window>,
@@ -145,7 +133,7 @@ fn position_uis(
     for CaaqiUiRoot(DetachedNode(root)) in &mut scenes {
         fn top_down_traverse(
             node: Entity,
-            tree: &Query<(Option<&CaaqiUiChildren>, Option<&CaaqiUiChildOf>), With<CaaqiNode>>,
+            tree: &Query<(Option<&Children>, Option<&ChildOf>), With<CaaqiNode>>,
             positionings: &mut Query<&mut Positioning, With<CaaqiNode>>,
             sizings: &Query<&Sizing, With<CaaqiNode>>,
             position_x: f64,
@@ -200,7 +188,7 @@ fn move_ui_to_origin(
 
 fn draw_uis(
     mut scenes: Query<(&mut Transform, &mut VelloScene2d, &CaaqiUiRoot), With<CaaqiUi>>,
-    nodes: Query<(&Drawing, &Sizing, &Positioning, Option<&CaaqiUiChildren>), With<CaaqiNode>>,
+    nodes: Query<(&Drawing, &Sizing, &Positioning, Option<&Children>), With<CaaqiNode>>,
     window: Single<&Window>,
 ) {
     for (mut transform, mut scene, CaaqiUiRoot(DetachedNode(root))) in &mut scenes {
@@ -208,10 +196,7 @@ fn draw_uis(
 
         fn recursive_draw(
             node: Entity,
-            nodes: &Query<
-                (&Drawing, &Sizing, &Positioning, Option<&CaaqiUiChildren>),
-                With<CaaqiNode>,
-            >,
+            nodes: &Query<(&Drawing, &Sizing, &Positioning, Option<&Children>), With<CaaqiNode>>,
             scene: &mut VelloScene2d,
         ) {
             let (drawing, sizing, positioning, children) = nodes.get(node).unwrap();
@@ -232,11 +217,6 @@ fn draw_uis(
                 (sizing.visible_width(), sizing.visible_height()),
             );
 
-            println!(
-                "Drawing node {:?} with rect {:?} and color {:?}",
-                node, rect, drawing.color
-            );
-
             scene.fill(
                 peniko::Fill::NonZero,
                 Default::default(),
@@ -254,8 +234,4 @@ fn draw_uis(
 
         recursive_draw(*root, &nodes, &mut scene);
     }
-}
-
-pub fn spawn_ui_scene(commands: &mut Commands) {
-    commands.spawn((VelloScene2d::default(), NoFrustumCulling, CaaqiUi));
 }

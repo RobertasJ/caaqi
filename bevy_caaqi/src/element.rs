@@ -1,17 +1,15 @@
 pub mod item;
 
+use bevy::ecs::hierarchy::ChildOf;
 pub use item::Item;
 use smallvec::SmallVec;
 
-use crate::{
-    context::{DetachedNode, NodeCreationCtx},
-    node_components::tree::CaaqiUiChildOf,
-};
+use crate::context::{DetachedNode, WorldContext};
 
 /// Marker trait for element types that can be created as UI nodes.
 pub trait Element {
     /// Convert the element into a UI node bundle.
-    fn into_ui_node(self, ctx: &mut NodeCreationCtx) -> DetachedNode;
+    fn into_ui_node(self, ctx: &mut WorldContext) -> DetachedNode;
 }
 
 /// Marker trait for element types that can contain children.
@@ -24,13 +22,11 @@ pub trait Element {
 pub trait CanHaveChildren: Element {
     fn add_children(
         element: DetachedNode,
-        ctx: &mut NodeCreationCtx,
+        ctx: &mut WorldContext,
         children: SmallVec<[DetachedNode; 1]>,
     ) -> DetachedNode {
         for child in children {
-            ctx.commands
-                .entity(child.entity())
-                .insert(CaaqiUiChildOf(element.entity()));
+            ctx.world.entity_mut(*child).insert(ChildOf(*element));
         }
 
         element

@@ -5,9 +5,7 @@ use bevy_vello::{integrations::scene::VelloScene2d, render::VelloView};
 
 use bevy_caaqi::context::{detached_scope, node, scope};
 use bevy_caaqi::{
-    CaaqiPlugin, CaaqiUi, CaaqiUiRoot,
-    context::{NodeCreationCtx, enter_caaqi_ctx},
-    element::Item,
+    CaaqiPlugin, CaaqiUi, CaaqiUiRoot, context::WorldContext, element::Item,
     node_components::positioning::Direction,
 };
 
@@ -18,10 +16,10 @@ fn main() {
         .run();
 }
 
-fn setup_camera(mut commands: Commands) {
-    commands.spawn((Camera2d, VelloView));
+fn setup_camera(world: &mut World) {
+    world.spawn((Camera2d, VelloView));
 
-    let root_node = enter_caaqi_ctx(&mut NodeCreationCtx::new(commands.reborrow()), || {
+    let root_node = WorldContext::new(world).enter(|| {
         let heights = 100.0;
 
         detached_scope::<Item>(|_| {
@@ -34,38 +32,23 @@ fn setup_camera(mut commands: Commands) {
             scope(|item: &mut Item| {
                 item.main_axis(Direction::Horizontal);
 
-                if true {
-                    node(|item: &mut Item| {
-                        item.color(bevy_caaqi::Color::from_str("#3fef4b").unwrap());
-                        item.width(100.0);
-                        item.height(heights);
-                    });
+                node(|item: &mut Item| {
+                    item.color(bevy_caaqi::Color::from_str("#943fef").unwrap());
+                    item.width(80.0);
+                    item.height(80.0);
+                    item.margin_all(10.0);
+                });
 
-                    node(|item: &mut Item| {
-                        item.color(bevy_caaqi::Color::from_str("#943fef").unwrap());
-                        item.width(80.0);
-                        item.height(80.0);
-                        item.margin_all(10.0);
-                    });
-                } else {
-                    node(|item: &mut Item| {
-                        item.color(bevy_caaqi::Color::from_str("#943fef").unwrap());
-                        item.width(80.0);
-                        item.height(80.0);
-                        item.margin_all(10.0);
-                    });
-
-                    node(|item: &mut Item| {
-                        item.color(bevy_caaqi::Color::from_str("#3fef4b").unwrap());
-                        item.width(100.0);
-                        item.height(heights);
-                    });
-                }
+                node(|item: &mut Item| {
+                    item.color(bevy_caaqi::Color::from_str("#3fef4b").unwrap());
+                    item.width(100.0);
+                    item.height(heights);
+                });
             });
         })
     });
 
-    commands.spawn((
+    world.spawn((
         VelloScene2d::default(),
         NoFrustumCulling,
         CaaqiUi,
