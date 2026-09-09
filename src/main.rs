@@ -11,6 +11,7 @@ use bevy_caaqi::{
         context_builder::{detached_scope, node, scope},
         node::positioning::Direction,
     },
+    tracked_value::{Ref, create_ref, create_ref_uninit, ref_action},
     world_context::WorldContext,
 };
 
@@ -63,6 +64,8 @@ fn setup_camera(world: &mut World) {
 
             let num = 5;
             let condition = true;
+
+            let memo = ref_action(move || if condition { "hello" } else { "world" });
 
             action(move || {
                 if condition {
