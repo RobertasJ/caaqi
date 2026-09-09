@@ -6,12 +6,15 @@ use bevy::ecs::{entity::Entity, hierarchy::ChildOf};
 pub use item::Item;
 use smallvec::SmallVec;
 
-use crate::{context_tree_builder::DetachedNode, world_context::WorldContext};
+use crate::{
+    context_tree_builder::DetachedNode, element::context_builder::ElementScope,
+    world_context::WorldContext,
+};
 
 /// Marker trait for element types that can be created as UI nodes.
 pub trait Element: Send + Sync + 'static {
     /// Convert the element into a UI node bundle.
-    fn into_ui_node(self, ctx: &mut WorldContext) -> DetachedNode;
+    fn into_ui_node(self, ctx: &mut WorldContext) -> DetachedNode<ElementScope>;
 }
 
 pub trait ElementMutator: From<Entity> {}
@@ -25,10 +28,10 @@ pub trait ElementMutator: From<Entity> {}
 )]
 pub trait CanHaveChildren: Element {
     fn add_children(
-        element: DetachedNode,
+        element: DetachedNode<ElementScope>,
         ctx: &mut WorldContext,
-        children: SmallVec<[DetachedNode; 1]>,
-    ) -> DetachedNode {
+        children: SmallVec<[DetachedNode<ElementScope>; 1]>,
+    ) -> DetachedNode<ElementScope> {
         for child in children {
             ctx.entity_mut(*child).insert(ChildOf(*element));
         }

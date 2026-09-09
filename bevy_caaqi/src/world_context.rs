@@ -3,7 +3,7 @@ use bevy::prelude::*;
 #[derive(Deref, DerefMut)]
 pub struct WorldContext<'w>(&'w mut World);
 
-scoped_thread_local::scoped_thread_local!(static CTX: for<>WorldContext<'_>);
+scoped_thread_local::scoped_thread_local!(static CTX: WorldContext<'_>);
 
 impl<'w> WorldContext<'w> {
     pub fn new(world: &'w mut World) -> Self {

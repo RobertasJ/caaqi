@@ -1,3 +1,5 @@
+use std::marker::PhantomData;
+
 use bevy::{
     ecs::{bundle::Bundle, entity::Entity, hierarchy::ChildOf, resource::Resource, world::World},
     prelude::Deref,
@@ -7,48 +9,50 @@ use smallvec::SmallVec;
 use crate::world_context::WorldContext;
 
 #[derive(Debug, Default, PartialEq, Eq, Resource)]
-struct AttachedNodes<TreeKind>(
-    pub(crate) SmallVec<[DetachedNode; 1]>,
-    pub(crate) std::marker::PhantomData<TreeKind>,
-);
+struct AttachedNodes<S: ScopeKind>(pub(crate) SmallVec<[DetachedNode<S>; 1]>);
 
 #[derive(Debug, PartialEq, Eq, Hash, Deref)]
-pub struct DetachedNode(pub(crate) Entity);
+pub struct DetachedNode<S: ScopeKind>(#[deref] Entity, PhantomData<S>);
 
-impl DetachedNode {
+pub trait ScopeKind: Send + Sync + Default + 'static {
+    fn with_scope_world<R>(world_scope: impl FnOnce(&mut World) -> R) -> R;
+}
+
+impl<S: ScopeKind> DetachedNode<S> {
     pub(crate) fn from_entity(entity: Entity) -> Self {
-        Self(entity)
+        Self(entity, PhantomData)
     }
 }
 
-pub fn children_scope<TreeKind: Send + Sync + Default + 'static>(
-    scope: impl FnOnce(),
-) -> SmallVec<[DetachedNode; 1]> {
-    let mut curr_attached = WorldContext::with(|ctx| {
-        std::mem::take(&mut ctx.get_resource_or_init::<AttachedNodes<TreeKind>>().0)
+pub fn collect_in_scope<S: ScopeKind, R>(
+    scope: impl FnOnce() -> R,
+) -> (R, SmallVec<[DetachedNode<S>; 1]>) {
+    let mut curr_attached = S::with_scope_world(|world| {
+        std::mem::take(&mut world.get_resource_or_init::<AttachedNodes<S>>().0)
     });
 
-    scope();
+    let res = scope();
 
-    WorldContext::with(|ctx| {
+    S::with_scope_world(|world| {
         std::mem::swap(
             &mut curr_attached,
-            &mut ctx.get_resource_or_init::<AttachedNodes<TreeKind>>().0,
+            &mut world.get_resource_or_init::<AttachedNodes<S>>().0,
         )
     });
 
-    curr_attached
+    (res, curr_attached)
 }
 
-pub fn attach_node<TreeKind: Send + Sync + Default + 'static>(node: DetachedNode) {
-    WorldContext::with(|ctx| {
-        ctx.get_resource_or_init::<AttachedNodes<TreeKind>>()
+pub fn attach_node<S: ScopeKind>(node: DetachedNode<S>) {
+    S::with_scope_world(|world| {
+        world
+            .get_resource_or_init::<AttachedNodes<S>>()
             .0
             .push(node)
     });
 }
 
-pub fn spawn_node(bundle: impl Bundle, world: &mut World) -> DetachedNode {
+pub fn spawn_node<S: ScopeKind>(bundle: impl Bundle, world: &mut World) -> DetachedNode<S> {
     DetachedNode::from_entity(world.spawn(bundle).id())
 }
 
@@ -61,15 +65,21 @@ mod scope_tests {
     struct Num(pub i32);
 
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-    struct TestTree;
+    struct TestScope;
+
+    impl ScopeKind for TestScope {
+        fn with_scope_world<R>(world_scope: impl FnOnce(&mut World) -> R) -> R {
+            WorldContext::with(|ctx| world_scope(ctx))
+        }
+    }
 
     #[test]
     fn test_scope() {
         let mut world = World::new();
         let mut ctx = WorldContext::new(&mut world);
 
-        let nodes = ctx.enter(|| {
-            children_scope::<TestTree>(|| {
+        let (_, nodes) = ctx.enter(|| {
+            collect_in_scope::<TestScope, ()>(|| {
                 let (entity1, entity2) = WorldContext::with(|ctx| {
                     let entity1 = ctx.spawn(Num(42)).id();
                     let entity2 = ctx.spawn(Num(43)).id();
@@ -77,8 +87,8 @@ mod scope_tests {
                     (entity1, entity2)
                 });
 
-                attach_node::<TestTree>(DetachedNode::from_entity(entity1));
-                attach_node::<TestTree>(DetachedNode::from_entity(entity2));
+                attach_node::<TestScope>(DetachedNode::from_entity(entity1));
+                attach_node::<TestScope>(DetachedNode::from_entity(entity2));
             })
         });
 

@@ -1,6 +1,7 @@
+pub mod action;
 mod context_tree_builder;
-pub mod decision;
 pub mod element;
+pub mod tracked_value;
 pub mod world_context;
 
 use bevy::{camera::visibility::NoFrustumCulling, prelude::*};
@@ -13,15 +14,23 @@ use bevy_vello::{
 pub use bevy_vello::vello::peniko::Color;
 
 use crate::{
+    action::context_builder::ActionScope,
     context_tree_builder::DetachedNode,
-    element::node::{Computed, Drawing, ElementNode, Positioning, Sizing, positioning::Direction},
+    element::{
+        context_builder::ElementScope,
+        node::{Computed, Drawing, ElementNode, Positioning, Sizing, positioning::Direction},
+    },
+    world_context::WorldContext,
 };
 
 #[derive(Debug, Default, Component)]
 pub struct CaaqiUi;
 
 #[derive(Debug, Component)]
-pub struct CaaqiUiRoot(pub DetachedNode);
+pub struct CaaqiUiRoot(pub DetachedNode<ElementScope>);
+
+#[derive(Debug, Component)]
+pub struct CaaqiActionRoot(pub DetachedNode<ActionScope>);
 
 /// SystemSet for Caaqi UI layout and rendering operations.
 ///
@@ -44,9 +53,11 @@ pub struct CaaqiPlugin;
 impl Plugin for CaaqiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(VelloPlugin::default())
+            .init_resource::<DecisionWorld>()
             .add_systems(
                 Update,
                 (
+                    run_decision_tree,
                     size_uis.in_set(CaaqiUiSystems::Sizing),
                     position_uis.in_set(CaaqiUiSystems::Positioning),
                     draw_uis.in_set(CaaqiUiSystems::Drawing),
@@ -71,6 +82,15 @@ fn window_changed(windows: Query<Entity, Changed<Window>>) -> bool {
     !windows.is_empty()
 }
 
+#[derive(Debug, Default, Resource, Deref, DerefMut)]
+struct DecisionWorld(World);
+
+fn run_decision_tree(mut world: &mut World) {
+    world.resource_scope::<DecisionWorld, ()>(|world, decision_world| {
+        let mut word_context = WorldContext::new(world);
+    });
+}
+
 fn size_uis(
     mut scenes: Query<&CaaqiUiRoot, With<CaaqiUi>>,
     mut tree: Query<(Option<&Children>, Option<&ChildOf>), With<ElementNode>>,
@@ -78,7 +98,7 @@ fn size_uis(
     positionings: Query<&Positioning, With<ElementNode>>,
     window: Single<&Window>,
 ) {
-    for CaaqiUiRoot(DetachedNode(root)) in &mut scenes {
+    for CaaqiUiRoot(root) in &mut scenes {
         fn bottom_up_traverse(
             node: Entity,
             tree: &Query<(Option<&Children>, Option<&ChildOf>), With<ElementNode>>,
@@ -120,7 +140,7 @@ fn size_uis(
             *sizing
         }
 
-        bottom_up_traverse(*root, &tree, &mut sizings, &positionings);
+        bottom_up_traverse(**root, &tree, &mut sizings, &positionings);
     }
 }
 
@@ -131,7 +151,7 @@ fn position_uis(
     sizings: Query<&Sizing, With<ElementNode>>,
     window: Single<&Window>,
 ) {
-    for CaaqiUiRoot(DetachedNode(root)) in &mut scenes {
+    for CaaqiUiRoot(root) in &mut scenes {
         fn top_down_traverse(
             node: Entity,
             tree: &Query<(Option<&Children>, Option<&ChildOf>), With<ElementNode>>,
@@ -174,7 +194,7 @@ fn position_uis(
             *sizing
         }
 
-        top_down_traverse(*root, &tree, &mut positionings, &sizings, 0.0, 0.0);
+        top_down_traverse(**root, &tree, &mut positionings, &sizings, 0.0, 0.0);
     }
 }
 
@@ -182,7 +202,7 @@ fn move_ui_to_origin(
     mut scenes: Query<(&mut Transform, &CaaqiUiRoot), With<CaaqiUi>>,
     windows: Single<&Window>,
 ) {
-    for (mut transform, CaaqiUiRoot(DetachedNode(root))) in &mut scenes {
+    for (mut transform, CaaqiUiRoot(root)) in &mut scenes {
         transform.translation = Vec3::new(windows.width() / -2.0, windows.height() / 2.0, 0.0);
     }
 }
@@ -192,7 +212,7 @@ fn draw_uis(
     nodes: Query<(&Drawing, &Sizing, &Positioning, Option<&Children>), With<ElementNode>>,
     window: Single<&Window>,
 ) {
-    for (mut transform, mut scene, CaaqiUiRoot(DetachedNode(root))) in &mut scenes {
+    for (mut transform, mut scene, CaaqiUiRoot(root)) in &mut scenes {
         scene.reset();
 
         fn recursive_draw(
@@ -233,6 +253,6 @@ fn draw_uis(
             }
         }
 
-        recursive_draw(*root, &nodes, &mut scene);
+        recursive_draw(**root, &nodes, &mut scene);
     }
 }

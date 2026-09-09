@@ -4,7 +4,7 @@ use bevy_vello::vello::peniko;
 use super::{CanHaveChildren, Element};
 use crate::context_tree_builder::{DetachedNode, spawn_node};
 use crate::element::ElementMutator;
-use crate::element::context_builder::create_element_node;
+use crate::element::context_builder::{ElementScope, create_element_node};
 use crate::element::node::positioning::Direction;
 use crate::element::node::{Drawing, Positioning, Sizing};
 use crate::world_context::WorldContext;
@@ -133,7 +133,7 @@ impl Item {
 }
 
 impl Element for Item {
-    fn into_ui_node(self, ctx: &mut WorldContext) -> DetachedNode {
+    fn into_ui_node(self, ctx: &mut WorldContext) -> DetachedNode<ElementScope> {
         create_element_node(
             (
                 Sizing {

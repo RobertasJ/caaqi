@@ -5,6 +5,7 @@ use bevy_vello::{integrations::scene::VelloScene2d, render::VelloView};
 
 use bevy_caaqi::{
     CaaqiPlugin, CaaqiUi, CaaqiUiRoot,
+    action::context_builder::{action, action_rewind, detached_action, run_action_node},
     element::{
         Item,
         context_builder::{detached_scope, node, scope},
@@ -50,6 +51,55 @@ fn setup_camera(world: &mut World) {
                 });
             });
         })
+    });
+
+    let decision_root = WorldContext::new(world).enter(|| {
+        let node = detached_action(|| {
+            println!("Decision 1");
+
+            action(|| {
+                println!("Decision 2");
+            });
+
+            let num = 5;
+            let condition = true;
+
+            action(move || {
+                if condition {
+                    action(move || {
+                        println!("Decision 3 with num: {}", num);
+                        action(|| {
+                            println!("Decision 4");
+
+                            action_rewind(|| {
+                                // undo the println 4
+                            });
+                        });
+
+                        action_rewind(|| {
+                            // undo the println 3
+                        });
+                    });
+                } else {
+                    action(move || {
+                        println!("Decision 5 with num * 2: {}", num * 2);
+
+                        action_rewind(|| {
+                            // undo the println 5
+                        });
+                    });
+                }
+            });
+
+            action_rewind(|| {
+                // undo the println 1
+                // undo the println 2
+            });
+        });
+
+        run_action_node(node);
+
+        node
     });
 
     world.spawn((
