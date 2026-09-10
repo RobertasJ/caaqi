@@ -5,9 +5,8 @@ edition = "2024"
 
 [dependencies]
 bevy.workspace = true
-bevy_vello.workspace = true
+caaqi_context = { package = "caaqi-context", path = "../caaqi_context" }
 bon = "3"
-scoped_thread_local = "1.0.0"
-smallvec = "1.15.2"
 atomic_refcell = "0.1.14"
 ouroboros = "0.18.5"
+smallvec.workspace = true

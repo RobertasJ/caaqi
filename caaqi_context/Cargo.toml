@@ -1,0 +1,9 @@
+[package]
+name = "caaqi-context"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy.workspace = true
+scoped_thread_local = "1.0.0"
+smallvec.workspace = true

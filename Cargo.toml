@@ -1,5 +1,5 @@
 [workspace]
-members = ["bevy_caaqi"]
+members = ["bevy_caaqi", "caaqi_context"]
 
 [package]
 name = "caaqi"
@@ -7,15 +7,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bevy.workspace = true
-bevy_vello.workspace = true
+bevy = { workspace = true, features = ["ui"] }
+caaqi_context = { package = "caaqi-context", path = "caaqi_context" }
 env_logger = "0.11.11"
 bevy_caaqi = { package = "bevy_caaqi", path = "bevy_caaqi" }
 
 [workspace.dependencies]
-bevy = { version = "0.19", default-features = false, features = ["2d"] }
-bevy_vello = "0.14.0"
-
+bevy = { version = "0.19", default-features = false }
+smallvec = "1.15.2"
 
 [features]
 hotpatching = ["bevy/hotpatching"]

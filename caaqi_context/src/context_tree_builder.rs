@@ -1,25 +1,31 @@
 use std::marker::PhantomData;
 
 use bevy::{
-    ecs::{bundle::Bundle, entity::Entity, hierarchy::ChildOf, resource::Resource, world::World},
+    ecs::{bundle::Bundle, entity::Entity, resource::Resource},
     prelude::Deref,
 };
 use smallvec::SmallVec;
 
-use crate::world_context::WorldContext;
+use crate::WorldContext;
 
 #[derive(Debug, Default, PartialEq, Eq, Resource)]
-struct AttachedNodes<S: ScopeKind>(pub(crate) SmallVec<[DetachedNode<S>; 1]>);
+struct AttachedNodes<S: ScopeKind>(SmallVec<[DetachedNode<S>; 1]>);
 
 #[derive(Debug, PartialEq, Eq, Hash, Deref)]
 pub struct DetachedNode<S: ScopeKind>(#[deref] Entity, PhantomData<S>);
 
-pub trait ScopeKind: Send + Sync + Default + 'static {
-    fn with_scope_world<R>(world_scope: impl FnOnce(&mut World) -> R) -> R;
+pub trait ScopeKind: Default + Send + Sync + 'static {}
+
+impl<S: ScopeKind> Clone for DetachedNode<S> {
+    fn clone(&self) -> Self {
+        Self::from_entity(**self)
+    }
 }
 
+impl<S: ScopeKind> Copy for DetachedNode<S> {}
+
 impl<S: ScopeKind> DetachedNode<S> {
-    pub(crate) fn from_entity(entity: Entity) -> Self {
+    pub fn from_entity(entity: Entity) -> Self {
         Self(entity, PhantomData)
     }
 }
@@ -27,33 +33,46 @@ impl<S: ScopeKind> DetachedNode<S> {
 pub fn collect_in_scope<S: ScopeKind, R>(
     scope: impl FnOnce() -> R,
 ) -> (R, SmallVec<[DetachedNode<S>; 1]>) {
-    let mut curr_attached = S::with_scope_world(|world| {
-        std::mem::take(&mut world.get_resource_or_init::<AttachedNodes<S>>().0)
+    let parent_attached = WorldContext::with(|world| {
+        world
+            .get_resource_mut::<AttachedNodes<S>>()
+            .map(|mut r| std::mem::take(&mut r.0))
+            .or_else(|| {
+                world.insert_resource(AttachedNodes::<S>::default());
+                None
+            })
     });
 
     let res = scope();
 
-    S::with_scope_world(|world| {
-        std::mem::swap(
-            &mut curr_attached,
-            &mut world.get_resource_or_init::<AttachedNodes<S>>().0,
-        )
+    let attached = WorldContext::with(|world| {
+        if let Some(mut previously_attached) = parent_attached {
+            std::mem::swap(
+                &mut previously_attached,
+                &mut world
+                    .get_resource_mut::<AttachedNodes<S>>()
+                    .expect("no scope for node exists")
+                    .0,
+            );
+
+            previously_attached
+        } else {
+            let nodes = world.remove_resource::<AttachedNodes<S>>();
+            nodes.unwrap().0
+        }
     });
 
-    (res, curr_attached)
+    (res, attached)
 }
 
 pub fn attach_node<S: ScopeKind>(node: DetachedNode<S>) {
-    S::with_scope_world(|world| {
+    WorldContext::with(|world| {
         world
-            .get_resource_or_init::<AttachedNodes<S>>()
+            .get_resource_mut::<AttachedNodes<S>>()
+            .expect("no scope for node exists")
             .0
             .push(node)
     });
-}
-
-pub fn spawn_node<S: ScopeKind>(bundle: impl Bundle, world: &mut World) -> DetachedNode<S> {
-    DetachedNode::from_entity(world.spawn(bundle).id())
 }
 
 #[cfg(test)]
@@ -67,11 +86,7 @@ mod scope_tests {
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
     struct TestScope;
 
-    impl ScopeKind for TestScope {
-        fn with_scope_world<R>(world_scope: impl FnOnce(&mut World) -> R) -> R {
-            WorldContext::with(|ctx| world_scope(ctx))
-        }
-    }
+    impl ScopeKind for TestScope {}
 
     #[test]
     fn test_scope() {
