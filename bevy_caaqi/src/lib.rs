@@ -55,31 +55,22 @@ impl Plugin for CaaqiPlugin {
         app.add_plugins(VelloPlugin::default())
             .init_resource::<DecisionWorld>()
             .add_systems(
-                Update,
+                PostUpdate,
                 (
                     run_decision_tree,
+                    move_ui_to_origin,
                     size_uis.in_set(CaaqiUiSystems::Sizing),
                     position_uis.in_set(CaaqiUiSystems::Positioning),
                     draw_uis.in_set(CaaqiUiSystems::Drawing),
                 )
                     .chain()
                     .run_if(needs_computation),
-            )
-            .add_systems(
-                Update,
-                move_ui_to_origin
-                    .in_set(CaaqiUiSystems::Rendering)
-                    .run_if(window_changed),
             );
     }
 }
 
 fn needs_computation(nodes: Query<Entity, (With<ElementNode>, Without<Computed>)>) -> bool {
     !nodes.is_empty()
-}
-
-fn window_changed(windows: Query<Entity, Changed<Window>>) -> bool {
-    !windows.is_empty()
 }
 
 #[derive(Debug, Default, Resource, Deref, DerefMut)]

@@ -4,6 +4,7 @@ hotpatch:
 run:
    cargo run
 
+[default]
 debug:
    cargo run --features debug
 
