@@ -11,7 +11,7 @@ use bevy_caaqi::{
         context_builder::{detached_scope, node, scope},
         node::positioning::Direction,
     },
-    tracked_value::{Ref, create_ref, create_ref_uninit, ref_action},
+    tracked_value::{Ref, create_ref, ref_, ref_action},
     world_context::WorldContext,
 };
 
@@ -62,17 +62,17 @@ fn setup_camera(world: &mut World) {
                 println!("Decision 2");
             });
 
-            let num = 5;
-            let condition = true;
+            let num = ref_(5);
+            let condition = ref_(true);
 
-            let memo = ref_action(move || if condition { "hello" } else { "world" });
+            let memo = ref_action(move || if *condition.read() { "hello" } else { "world" });
 
             action(move || {
-                if condition {
+                if *condition.read() {
                     action(move || {
-                        println!("Decision 3 with num: {}", num);
-                        action(|| {
-                            println!("Decision 4");
+                        println!("Decision 3 with num: {}", *num.read());
+                        action(move || {
+                            println!("Decision 4: {}", *memo.read());
 
                             action_rewind(|| {
                                 // undo the println 4
@@ -85,7 +85,7 @@ fn setup_camera(world: &mut World) {
                     });
                 } else {
                     action(move || {
-                        println!("Decision 5 with num * 2: {}", num * 2);
+                        println!("Decision 5 with num * 2: {}", *num.read() * 2);
 
                         action_rewind(|| {
                             // undo the println 5

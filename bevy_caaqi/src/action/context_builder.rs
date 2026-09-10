@@ -8,8 +8,6 @@ use bevy::{
 use crate::{
     action::node::{ActionNode, ActionRewind},
     context_tree_builder::{DetachedNode, ScopeKind, attach_node, collect_in_scope, spawn_node},
-    element::context_builder::{scope, scope_with},
-    tracked_value::{Ref, create_ref_uninit},
     world_context::WorldContext,
 };
 
@@ -54,7 +52,12 @@ pub fn run_action_node(node: DetachedNode<ActionScope>) {
     });
 
     WorldContext::with(|ctx| {
-        ctx.entity_mut(*node).insert(action_node);
+        let mut entity_mut = ctx.entity_mut(*node);
+        entity_mut.insert(action_node);
+
+        for sub_action in sub_actions {
+            entity_mut.add_child(*sub_action);
+        }
     });
 }
 

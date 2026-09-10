@@ -63,7 +63,7 @@ impl Plugin for CaaqiPlugin {
                     draw_uis.in_set(CaaqiUiSystems::Drawing),
                 )
                     .chain()
-                    .run_if(ui_changed),
+                    .run_if(needs_computation),
             )
             .add_systems(
                 Update,
@@ -74,7 +74,7 @@ impl Plugin for CaaqiPlugin {
     }
 }
 
-fn ui_changed(nodes: Query<Entity, (With<ElementNode>, Without<Computed>)>) -> bool {
+fn needs_computation(nodes: Query<Entity, (With<ElementNode>, Without<Computed>)>) -> bool {
     !nodes.is_empty()
 }
 

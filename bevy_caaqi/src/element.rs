@@ -2,7 +2,10 @@ pub mod context_builder;
 pub mod item;
 pub mod node;
 
-use bevy::ecs::{entity::Entity, hierarchy::ChildOf};
+use bevy::ecs::{
+    entity::{self, Entity},
+    hierarchy::ChildOf,
+};
 pub use item::Item;
 use smallvec::SmallVec;
 
@@ -32,8 +35,10 @@ pub trait CanHaveChildren: Element {
         ctx: &mut WorldContext,
         children: SmallVec<[DetachedNode<ElementScope>; 1]>,
     ) -> DetachedNode<ElementScope> {
+        let mut entity_mut = ctx.entity_mut(*element);
+
         for child in children {
-            ctx.entity_mut(*child).insert(ChildOf(*element));
+            entity_mut.add_child(*child);
         }
 
         element

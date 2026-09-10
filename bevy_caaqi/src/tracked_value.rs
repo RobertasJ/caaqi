@@ -1,10 +1,35 @@
-use bevy::ecs::{component::Component, entity::Entity, world::World};
-use std::any::Any;
+use atomic_refcell::{AtomicRef, AtomicRefCell, AtomicRefMut};
+use bevy::{
+    ecs::{
+        component::Component,
+        entity::{Entity, EntityNotSpawnedError},
+        world::{EntityRef, EntityWorldMut, World, error::EntityMutableFetchError},
+    },
+    platform::sync::atomic,
+};
+use ouroboros::self_referencing;
+use std::{
+    any::Any,
+    io::Read,
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
+    sync::{Arc, RwLock},
+};
 
 use crate::{
     action::context_builder::{action, action_rewind},
+    context_tree_builder::ScopeKind,
     world_context::WorldContext,
 };
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RefScope;
+
+impl ScopeKind for RefScope {
+    fn with_scope_world<R>(world_scope: impl FnOnce(&mut World) -> R) -> R {
+        WorldContext::with(|ctx| world_scope(ctx))
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Ref<T: Send + Sync + 'static>(Entity, std::marker::PhantomData<T>);
@@ -21,7 +46,15 @@ impl<T: Send + Sync + 'static> Copy for Ref<T> {}
 pub struct RefTypeErased(Entity);
 
 #[derive(Component)]
-struct RefValue(Box<dyn Any + Send + Sync + 'static>);
+struct RefValue(Arc<AtomicRefCell<Box<dyn Any + Send + Sync + 'static>>>);
+
+impl RefValue {
+    fn new<T: Any + Send + Sync + 'static>(value: T) -> Self {
+        Self(Arc::new(AtomicRefCell::from(
+            Box::new(value) as Box<dyn Any + Send + Sync + 'static>
+        )))
+    }
+}
 
 pub fn ref_<T: Send + Sync + 'static>(value: T) -> Ref<T> {
     let ref_ = create_ref(value);
@@ -49,7 +82,7 @@ pub fn ref_action<T: Send + Sync + 'static>(
     let mut ref_ = ref_uninit::<T>();
 
     action(move || {
-        ref_.set(computation());
+        ref_.set_or_init(computation());
     });
 
     ref_
@@ -57,7 +90,7 @@ pub fn ref_action<T: Send + Sync + 'static>(
 
 pub fn create_ref<T: Any + Send + Sync + 'static>(value: T) -> Ref<T> {
     WorldContext::with(|ctx| {
-        let entity = ctx.spawn(RefValue(Box::new(value))).id();
+        let entity = ctx.spawn(RefValue::new(value)).id();
         Ref(entity, std::marker::PhantomData)
     })
 }
@@ -80,29 +113,128 @@ pub fn untracked_scope(scope: impl FnOnce()) {
 }
 
 impl<T: Any + Send + Sync + 'static> Ref<T> {
-    pub fn set(&mut self, value: T) {
+    pub fn set_or_init(&mut self, value: T) {
         WorldContext::with(|ctx| {
-            if let Some(mut ref_value) = ctx
-                .get_entity_mut(self.0)
-                .expect("the Ref has been deallocated")
-                .get_mut::<RefValue>()
-            {
-                let Some(ref_value) = ref_value.0.downcast_mut::<T>() else {
-                    panic!(
-                        "The value this Ref points to is not of the type parameter. Maybe you used RefTypeErased::downcast to get a Ref of the wrong type?"
-                    );
-                };
-                *ref_value = value;
+            if let Some(ref_value) = self.value(ctx) {
+                *ref_value.0.borrow_mut() = Box::new(value);
             } else {
-                ctx.get_entity_mut(self.0)
-                    .expect("the Ref has been deallocated")
-                    .insert(RefValue(Box::new(value)));
+                let mut entity = self.entity_mut(ctx).expect("This Ref has been deallocated");
+                entity.insert(RefValue::new(value));
             }
         });
     }
 
+    pub fn set(&mut self, value: T) {
+        WorldContext::with(|ctx| {
+            let ref_value = self.value(ctx).expect("the Ref is not initialized");
+
+            *ref_value.0.borrow_mut() = Box::new(value);
+        });
+    }
+
+    pub fn read(&self) -> ReadRef<T> {
+        WorldContext::with(|ctx| {
+            let ref_value = self.value(ctx).expect("the Ref is not initialized");
+
+            Self::read_ref_value(ref_value)
+        })
+    }
+
+    pub fn write(&mut self) -> WriteRef<T> {
+        WorldContext::with(|ctx| {
+            let ref_value = self.value(ctx).expect("the Ref is not initialized");
+
+            Self::write_ref_value(ref_value)
+        })
+    }
+
+    fn write_ref_value(ref_value: &RefValue) -> WriteRef<T> {
+        WriteRef::new(
+            Arc::clone(&ref_value.0),
+            |arc| arc.borrow_mut(),
+            PhantomData,
+        )
+    }
+
+    fn read_ref_value(ref_value: &RefValue) -> ReadRef<T> {
+        ReadRef::new(Arc::clone(&ref_value.0), |arc| arc.borrow(), PhantomData)
+    }
+
+    fn value<'a>(&self, ctx: &'a mut WorldContext) -> Option<&'a RefValue> {
+        self.entity(ctx)
+            .expect("the Ref has been deallocated")
+            .get::<RefValue>()
+    }
+
+    fn entity<'a>(
+        &self,
+        ctx: &'a mut WorldContext,
+    ) -> Result<EntityRef<'a>, EntityNotSpawnedError> {
+        ctx.get_entity(self.0)
+    }
+
+    fn entity_mut<'a>(
+        &self,
+        ctx: &'a mut WorldContext,
+    ) -> Result<EntityWorldMut<'a>, EntityMutableFetchError> {
+        ctx.get_entity_mut(self.0)
+    }
+
     pub fn into_erased(self) -> RefTypeErased {
         RefTypeErased(self.0)
+    }
+}
+
+#[self_referencing]
+pub struct ReadRef<T: Any + Send + Sync + 'static> {
+    arc: Arc<AtomicRefCell<Box<dyn Any + Send + Sync + 'static>>>,
+    #[borrows(arc)]
+    #[covariant]
+    borrow: AtomicRef<'this, Box<dyn Any + Send + Sync + 'static>>,
+    _type: std::marker::PhantomData<T>,
+}
+
+impl<T: Any + Send + Sync + 'static> Deref for ReadRef<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.with_borrow(|borrow| {
+            borrow
+                .deref()
+                .downcast_ref::<T>()
+                .expect("the Ref is not initialized")
+        })
+    }
+}
+
+#[self_referencing]
+pub struct WriteRef<T: Any + Send + Sync + 'static> {
+    arc: Arc<AtomicRefCell<Box<dyn Any + Send + Sync + 'static>>>,
+    #[borrows(mut arc)]
+    #[covariant]
+    borrow: AtomicRefMut<'this, Box<dyn Any + Send + Sync + 'static>>,
+    _type: std::marker::PhantomData<T>,
+}
+
+impl<T: Any + Send + Sync + 'static> Deref for WriteRef<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.with_borrow(|borrow| {
+            borrow
+                .deref()
+                .downcast_ref::<T>()
+                .expect("the Ref is not initialized")
+        })
+    }
+}
+
+impl<T: Any + Send + Sync + 'static> DerefMut for WriteRef<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.with_borrow_mut(|borrow| borrow.deref_mut())
+            .deref_mut()
+            .downcast_mut::<T>()
+            .expect("the Ref is not initialized")
     }
 }
 
