@@ -6,3 +6,7 @@ run:
 
 debug:
    cargo run --features debug
+
+push:
+   jj b m main
+   jj git push
