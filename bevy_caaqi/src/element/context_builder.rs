@@ -2,7 +2,7 @@ use bevy::{ecs::bundle::Bundle, prelude::World};
 
 use crate::{
     context_tree_builder::{DetachedNode, ScopeKind, attach_node, collect_in_scope},
-    element::{CanHaveChildren, Element},
+    element::{CanHaveChildren, Element, node::ElementNode},
     world_context::WorldContext,
 };
 
@@ -19,7 +19,7 @@ impl ScopeKind for ElementScope {
 /// This is the primary method for node creation.
 #[track_caller]
 pub fn create_element_node(bundle: impl Bundle, world: &mut World) -> DetachedNode<ElementScope> {
-    crate::context_tree_builder::spawn_node(bundle, world)
+    crate::context_tree_builder::spawn_node((ElementNode, bundle), world)
 }
 
 #[track_caller]
