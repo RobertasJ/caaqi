@@ -6,10 +6,10 @@ use bevy::{
 };
 use smallvec::SmallVec;
 
-use crate::WorldContext;
+use crate::WORLD;
 
 #[derive(Debug, Default, PartialEq, Eq, Resource)]
-struct AttachedNodes<S: ScopeKind>(SmallVec<[DetachedNode<S>; 1]>);
+struct AttachedNodes<S: ScopeKind>(SmallVec<[Entity; 1]>, PhantomData<S>);
 
 #[derive(Debug, PartialEq, Eq, Hash, Deref)]
 pub struct DetachedNode<S: ScopeKind>(#[deref] Entity, PhantomData<S>);
@@ -30,10 +30,8 @@ impl<S: ScopeKind> DetachedNode<S> {
     }
 }
 
-pub fn collect_in_scope<S: ScopeKind, R>(
-    scope: impl FnOnce() -> R,
-) -> (R, SmallVec<[DetachedNode<S>; 1]>) {
-    let parent_attached = WorldContext::with(|world| {
+pub fn collect_in_scope<S: ScopeKind, R>(scope: impl FnOnce() -> R) -> (R, SmallVec<[Entity; 1]>) {
+    let parent_attached = WORLD.with(|world| {
         world
             .get_resource_mut::<AttachedNodes<S>>()
             .map(|mut r| std::mem::take(&mut r.0))
@@ -45,7 +43,7 @@ pub fn collect_in_scope<S: ScopeKind, R>(
 
     let res = scope();
 
-    let attached = WorldContext::with(|world| {
+    let attached = WORLD.with(|world| {
         if let Some(mut previously_attached) = parent_attached {
             std::mem::swap(
                 &mut previously_attached,
@@ -66,12 +64,12 @@ pub fn collect_in_scope<S: ScopeKind, R>(
 }
 
 pub fn attach_node<S: ScopeKind>(node: DetachedNode<S>) {
-    WorldContext::with(|world| {
+    WORLD.with(|world| {
         world
             .get_resource_mut::<AttachedNodes<S>>()
             .expect("no scope for node exists")
             .0
-            .push(node)
+            .push(*node)
     });
 }
 
@@ -91,13 +89,12 @@ mod scope_tests {
     #[test]
     fn test_scope() {
         let mut world = World::new();
-        let mut ctx = WorldContext::new(&mut world);
 
-        let (_, nodes) = ctx.enter(|| {
+        let (_, nodes) = WORLD.set(&mut world, || {
             collect_in_scope::<TestScope, ()>(|| {
-                let (entity1, entity2) = WorldContext::with(|ctx| {
-                    let entity1 = ctx.spawn(Num(42)).id();
-                    let entity2 = ctx.spawn(Num(43)).id();
+                let (entity1, entity2) = WORLD.with(|world| {
+                    let entity1 = world.spawn(Num(42)).id();
+                    let entity2 = world.spawn(Num(43)).id();
 
                     (entity1, entity2)
                 });

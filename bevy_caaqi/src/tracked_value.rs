@@ -3,7 +3,7 @@ use bevy::{
     ecs::{
         component::Component,
         entity::{Entity, EntityNotSpawnedError},
-        world::{EntityRef, EntityWorldMut, Mut, error::EntityMutableFetchError},
+        world::{EntityRef, EntityWorldMut, Mut, World, error::EntityMutableFetchError},
     },
     prelude::{Deref, DerefMut},
 };
@@ -16,8 +16,8 @@ use std::{
     sync::Arc,
 };
 
-use crate::action::{context_builder::action, node::NeedsRerun};
-use caaqi_context::{DefferedWorldContext, DetachedNode, ScopeKind, WorldContext, attach_node};
+use crate::action::{context_builder::action, execute::ShouldExecuteTree, node::NeedsRerun};
+use caaqi_context::{DetachedNode, ScopeKind, WORLD, attach_node};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SubscribeScope;
@@ -101,29 +101,31 @@ pub fn ref_action<T: Send + Sync + 'static>(
 }
 
 pub fn create_ref<T: Any + Send + Sync + 'static>(value: T) -> Ref<T> {
-    WorldContext::with(|ctx| {
-        let entity = ctx.spawn(RefValue::new(value)).id();
+    WORLD.with(|world| {
+        let entity = world.spawn(RefValue::new(value)).id();
         Ref(entity, std::marker::PhantomData)
     })
 }
 
 pub fn create_ref_uninit<T: Send + Sync + 'static>() -> Ref<T> {
-    WorldContext::with(|ctx| {
-        let entity = ctx.spawn((RefValue::new_uninit())).id();
+    WORLD.with(|world| {
+        let entity = world.spawn((RefValue::new_uninit())).id();
         Ref(entity, std::marker::PhantomData)
     })
 }
 
 pub fn drop_ref<T: Any + Send + Sync + 'static>(ref_: Ref<T>) {
-    WorldContext::with(|ctx| {
-        ctx.despawn(ref_.0);
+    WORLD.with(|world| {
+        world.despawn(ref_.0);
     });
 }
 
 impl<T: Any + Send + Sync + 'static> Ref<T> {
     pub fn set_or_init(&mut self, value: T) {
-        WorldContext::with(|ctx| {
-            let mut entity_mut = self.entity_mut(ctx).expect("the Ref has been deallocated");
+        WORLD.with(|world| {
+            let mut entity_mut = self
+                .entity_mut(world)
+                .expect("the Ref has been deallocated");
             let mut ref_value = entity_mut
                 .get_mut::<RefValue>()
                 .expect("Whoops, someone created a Ref incorrectly");
@@ -140,20 +142,22 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
     }
 
     pub fn notify(&self) {
-        WorldContext::with(|ctx| {
-            let notify = ctx
+        WORLD.with(|world| {
+            let notify = world
                 .get::<Notify>(self.0)
                 .expect("the Ref is not initialized");
 
             for subscriber in notify.clone().iter() {
-                ctx.entity_mut(*subscriber).insert(NeedsRerun);
+                world.get_mut::<NeedsRerun>(*subscriber).unwrap().0 = true;
             }
+
+            world.get_resource_mut::<ShouldExecuteTree>().unwrap().0 = true;
         });
     }
 
     pub fn set(&mut self, value: T) {
-        WorldContext::with(|ctx| {
-            let ref_value = self.data(ctx).expect("the Ref is not initialized");
+        WORLD.with(|world| {
+            let ref_value = self.data(world).expect("the Ref is not initialized");
 
             *ref_value.borrow_mut() = Box::new(value);
         });
@@ -166,8 +170,8 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
     }
 
     fn silent_read(&self) -> ReadRef<T> {
-        WorldContext::with(|ctx| {
-            let ref_value = self.data(ctx).expect("the Ref is not initialized");
+        WORLD.with(|world| {
+            let ref_value = self.data(world).expect("the Ref is not initialized");
 
             self.read_ref_value(ref_value)
         })
@@ -180,8 +184,8 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
     }
 
     fn silent_write(&mut self) -> WriteRef<T> {
-        WorldContext::with(|ctx| {
-            let ref_value = self.data(ctx).expect("the Ref is not initialized");
+        WORLD.with(|world| {
+            let ref_value = self.data(world).expect("the Ref is not initialized");
 
             self.write_ref_value(ref_value)
         })
@@ -201,7 +205,7 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
         ReadRef::new(Arc::clone(ref_value), |arc| arc.borrow(), PhantomData)
     }
 
-    fn value<'a>(&self, ctx: &'a mut WorldContext) -> Option<&'a RefValue> {
+    fn value<'a>(&self, ctx: &'a mut World) -> Option<&'a RefValue> {
         self.entity(ctx)
             .expect("the Ref has been deallocated")
             .get::<RefValue>()
@@ -209,21 +213,18 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
 
     fn data<'a>(
         &self,
-        ctx: &'a mut WorldContext,
+        ctx: &'a mut World,
     ) -> Option<&'a Arc<AtomicRefCell<Box<dyn Any + Send + Sync + 'static>>>> {
         self.value(ctx).and_then(|ref_value| ref_value.0.as_ref())
     }
 
-    fn entity<'a>(
-        &self,
-        ctx: &'a mut WorldContext,
-    ) -> Result<EntityRef<'a>, EntityNotSpawnedError> {
+    fn entity<'a>(&self, ctx: &'a mut World) -> Result<EntityRef<'a>, EntityNotSpawnedError> {
         ctx.get_entity(self.0)
     }
 
     fn entity_mut<'a>(
         &self,
-        ctx: &'a mut WorldContext,
+        ctx: &'a mut World,
     ) -> Result<EntityWorldMut<'a>, EntityMutableFetchError> {
         ctx.get_entity_mut(self.0)
     }

@@ -5,5 +5,5 @@ edition = "2024"
 
 [dependencies]
 bevy.workspace = true
-scoped_thread_local = "1.0.0"
+scoped-tls-hkt = "0.1"
 smallvec.workspace = true

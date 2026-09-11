@@ -28,9 +28,5 @@ pub enum CaaqiUiSystems {
 pub struct CaaqiPlugin;
 
 impl Plugin for CaaqiPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_systems(PostUpdate, (run_decision_tree,).chain());
-    }
+    fn build(&self, app: &mut App) {}
 }
-
-fn run_decision_tree(mut world: &mut World) {}

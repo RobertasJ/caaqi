@@ -1975,7 +1975,7 @@ name = "caaqi-context"
 version = "0.1.0"
 dependencies = [
  "bevy",
- "scoped_thread_local",
+ "scoped-tls-hkt",
  "smallvec",
 ]
 
@@ -4757,10 +4757,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e1cf6437eb19a8f4a6cc0f7dca544973b0b78843adbfeb3683d1a94a0024a294"
 
 [[package]]
-name = "scoped_thread_local"
-version = "1.0.0"
+name = "scoped-tls-hkt"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72f74536a5851ef52e5e8a5e8ba1449fe69a310181df41c453a0b31d0d9a3a0c"
+checksum = "e9603871ffe5df3ac39cb624790c296dbd47a400d202f56bf3e414045099524d"
 
 [[package]]
 name = "scopeguard"
