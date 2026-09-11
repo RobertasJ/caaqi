@@ -16,10 +16,7 @@ use std::{
     sync::Arc,
 };
 
-use crate::action::{
-    context_builder::{action, rewind},
-    node::NeedsRerun,
-};
+use crate::action::{context_builder::action, node::NeedsRerun};
 use caaqi_context::{DefferedWorldContext, DetachedNode, ScopeKind, WorldContext, attach_node};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -74,9 +71,9 @@ impl RefValue {
 pub fn ref_<T: Send + Sync + 'static>(value: T) -> Ref<T> {
     let ref_ = create_ref(value);
 
-    rewind(move || {
-        drop_ref(ref_);
-    });
+    // rewind(move || {
+    //     drop_ref(ref_);
+    // });
 
     ref_
 }
@@ -84,9 +81,9 @@ pub fn ref_<T: Send + Sync + 'static>(value: T) -> Ref<T> {
 pub fn ref_uninit<T: Send + Sync + 'static>() -> Ref<T> {
     let ref_ = create_ref_uninit::<T>();
 
-    rewind(move || {
-        drop_ref(ref_);
-    });
+    // rewind(move || {
+    //     drop_ref(ref_);
+    // });
 
     ref_
 }
@@ -191,7 +188,7 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
         self.silent_read()
     }
 
-    pub fn silent_read(&self) -> ReadRef<T> {
+    fn silent_read(&self) -> ReadRef<T> {
         WorldContext::with(|ctx| {
             let ref_value = self.data(ctx).expect("the Ref is not initialized");
 
@@ -205,7 +202,7 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
         self.silent_write()
     }
 
-    pub fn silent_write(&mut self) -> WriteRef<T> {
+    fn silent_write(&mut self) -> WriteRef<T> {
         WorldContext::with(|ctx| {
             let ref_value = self.data(ctx).expect("the Ref is not initialized");
 

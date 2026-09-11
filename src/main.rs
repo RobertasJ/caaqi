@@ -2,7 +2,7 @@ use bevy::{ecs::world::DeferredWorld, prelude::*};
 
 use bevy_caaqi::{
     CaaqiPlugin,
-    action::context_builder::{action, action_root, detached_action, rewind, run_action_node},
+    action::context_builder::{action, action_root, detached_action, run_action_node},
     tracked_value::{ref_, ref_action},
 };
 use caaqi_context::WorldContext;
@@ -25,12 +25,6 @@ fn setup_camera(mut commands: Commands) {
         action(move || {
             if *cond.read() {
                 action(move || {
-                    let prev_count = *count.read();
-
-                    rewind(move || {
-                        *count.write() = prev_count;
-                    });
-
                     *count.write() = 1;
                 });
             }

@@ -1,7 +1,7 @@
 use caaqi_context::{DetachedNode, ScopeKind, WorldContext, attach_node, collect_in_scope};
 
 use crate::{
-    action::node::{ActionNode, ActionRewind},
+    action::node::ActionNode,
     tracked_value::{Notify, SubscribeScope},
 };
 
@@ -56,8 +56,8 @@ pub fn action_root(action_root: impl FnMut() + Send + Sync + 'static) -> ActionN
     ActionNode(Box::new(action_root))
 }
 
-pub fn rewind(undo: impl FnOnce() + Send + Sync + 'static) {
-    attach_node::<ActionScope>(DetachedNode::from_entity(WorldContext::with(|ctx| {
-        ctx.spawn(ActionRewind(Box::new(undo))).id()
-    })));
-}
+// pub fn rewind(undo: impl FnOnce() + Send + Sync + 'static) {
+//     attach_node::<ActionScope>(DetachedNode::from_entity(WorldContext::with(|ctx| {
+//         ctx.spawn(ActionRewind(Box::new(undo))).id()
+//     })));
+// }
