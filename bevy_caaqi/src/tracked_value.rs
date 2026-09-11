@@ -136,42 +136,19 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
     }
 
     pub fn subscribe(&self) {
-        if WorldContext::is_set() {
-            attach_node(DetachedNode::<SubscribeScope>::from_entity(self.0));
-        } else {
-            panic!("WorldContext is not set or is already borrowed.");
-        }
+        attach_node(DetachedNode::<SubscribeScope>::from_entity(self.0));
     }
 
     pub fn notify(&self) {
-        // Notify all subscribers of this Ref that it has changed, use WorldContext or DefferedWorldContext if WorldContext is not available to do so
-        if WorldContext::is_set() {
-            WorldContext::with(|ctx| {
-                let notify = ctx
-                    .get::<Notify>(self.0)
-                    .expect("the Ref is not initialized");
+        WorldContext::with(|ctx| {
+            let notify = ctx
+                .get::<Notify>(self.0)
+                .expect("the Ref is not initialized");
 
-                for subscriber in notify.clone().iter() {
-                    ctx.entity_mut(*subscriber).insert(NeedsRerun);
-                }
-            });
-        } else if DefferedWorldContext::is_set() {
-            DefferedWorldContext::with(|ctx| {
-                let (entities, mut commands) = ctx.entities_and_commands();
-
-                let notify = entities
-                    .get(self.0)
-                    .expect("the Ref is not initialized")
-                    .get::<Notify>()
-                    .expect("the Ref is not initialized");
-
-                for subscriber in notify.iter() {
-                    commands.entity(*subscriber).insert(NeedsRerun);
-                }
-            });
-        } else {
-            panic!("WorldContext or DefferedWorldContext is not set or is already borrowed.");
-        }
+            for subscriber in notify.clone().iter() {
+                ctx.entity_mut(*subscriber).insert(NeedsRerun);
+            }
+        });
     }
 
     pub fn set(&mut self, value: T) {
