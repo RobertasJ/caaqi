@@ -69,58 +69,6 @@ fn setup_ui(mut commands: Commands) {
             }
         });
     });
-
-    // // equivalent to `defer_action_eval`
-    // commands
-    //     .spawn((
-    //         Node {
-    //             width: Val::Px(500.0),
-    //             height: Val::Px(600.0),
-    //             ..default()
-    //         },
-    //         BackgroundColor(Color::hsl(0.0, 0.9, 0.5)),
-    //     ))
-    //     .observe(
-    //         |event: On<Pointer<Over>>, mut nodes: Query<&mut BackgroundColor>| {
-    //             if let Ok(mut color) = nodes.get_mut(event.entity) {
-    //                 color.0 = Color::hsl(0.0, 0.9, 0.8);
-    //             }
-    //         },
-    //     )
-    //     .observe(
-    //         |event: On<Pointer<Out>>, mut nodes: Query<&mut BackgroundColor>| {
-    //             if let Ok(mut color) = nodes.get_mut(event.entity) {
-    //                 color.0 = Color::hsl(0.0, 0.9, 0.5);
-    //             }
-    //         },
-    //     )
-    //     .with_children(|parent| {
-    //         for _ in 0..5 {
-    //             parent
-    //                 .spawn((
-    //                     Node {
-    //                         width: Val::Px(100.0),
-    //                         height: Val::Px(100.0),
-    //                         ..default()
-    //                     },
-    //                     BackgroundColor(Color::hsl(100.0, 0.9, 0.5)),
-    //                 ))
-    //                 .observe(
-    //                     |event: On<Pointer<Over>>, mut nodes: Query<&mut BackgroundColor>| {
-    //                         if let Ok(mut color) = nodes.get_mut(event.entity) {
-    //                             color.0 = Color::hsl(100.0, 0.9, 0.8);
-    //                         }
-    //                     },
-    //                 )
-    //                 .observe(
-    //                     |event: On<Pointer<Out>>, mut nodes: Query<&mut BackgroundColor>| {
-    //                         if let Ok(mut color) = nodes.get_mut(event.entity) {
-    //                             color.0 = Color::hsl(100.0, 0.9, 0.5);
-    //                         }
-    //                     },
-    //                 );
-    //         }
-    //     });
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
