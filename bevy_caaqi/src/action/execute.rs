@@ -2,8 +2,8 @@ use std::{collections::HashSet, ops::Deref};
 
 use crate::{
     action::{
-        context_builder::{ActionScope, flush_tracked_writes, run_action_node},
-        node::{ActionLocation, Deps, Stale},
+        context_builder::{ActionScope, flush_tracked_writes},
+        node::{ActionLocation, ActionRewind, Deps, Stale},
     },
     tracked_value::{RefInitLocation, RefTypeErased, SubscribeScope},
 };
@@ -11,9 +11,9 @@ use bevy::{
     ecs::{
         entity::Entity,
         hierarchy::{ChildOf, Children},
-        query::{QueryState, With, Without},
+        query::{Has, Or, QueryState, With, Without},
         resource::Resource,
-        system::Command,
+        system::{Command, Query},
         world::{EntityMut, EntityWorldMut, World},
     },
     platform::collections::HashMap,
@@ -80,4 +80,71 @@ impl Command for FlushWrites {
     fn apply(self, world: &mut World) -> Self::Out {
         flush_tracked_writes(world);
     }
+}
+
+pub fn run_action_node(world: &mut World, node: Entity) {
+    let mut rewinds = world.query_filtered::<(
+        Entity,
+        Option<&Children>,
+        Has<ActionRewind>,
+    ), Or<(With<ActionRewind>, With<ActionNode>)>>();
+    let rewinds = rewinds.query(world);
+
+    let mut rewinds_to_run = vec![];
+
+    fn rec(
+        node: Entity,
+        rewinds: &Query<
+            (Entity, Option<&Children>, Has<ActionRewind>),
+            Or<(With<ActionRewind>, With<ActionNode>)>,
+        >,
+        rewinds_to_run: &mut Vec<Entity>,
+    ) {
+        let (_, node_children, _) = rewinds.get(node).unwrap();
+        if let Some(children) = node_children {
+            for child in children {
+                let (child_entity, _, has_rewind) = rewinds.get(*child).unwrap();
+                if has_rewind {
+                    rewinds_to_run.push(child_entity);
+                } else {
+                    rec(child_entity, rewinds, rewinds_to_run);
+                }
+            }
+        }
+    }
+
+    rec(node, &rewinds, &mut rewinds_to_run);
+
+    rewinds_to_run.reverse();
+
+    for rewind in rewinds_to_run {
+        let mut entity_mut = world.entity_mut(rewind);
+        let action_rewind = entity_mut.take::<ActionRewind>().unwrap();
+        (action_rewind.0)(world);
+    }
+
+    let mut entity_mut = world.entity_mut(node);
+    entity_mut.despawn_children();
+
+    let mut action_node = if let Some(action_node) = world.entity_mut(node).take::<ActionNode>() {
+        action_node
+    } else {
+        panic!("entity {:?} is not an ActionNode", node);
+    };
+
+    let (action_result, depends_on) = collect_in_scope::<SubscribeScope, _>(world, |world| {
+        collect_in_scope::<ActionScope, _>(world, |world| {
+            (action_node.0)(world);
+        })
+    });
+
+    let (_, sub_actions_or_rewinds) = action_result;
+
+    let mut entity_mut = world.entity_mut(node);
+    entity_mut.insert(action_node);
+    entity_mut.add_children(&sub_actions_or_rewinds);
+
+    entity_mut.insert(Deps(depends_on.into_iter().collect()));
+
+    flush_tracked_writes(world);
 }

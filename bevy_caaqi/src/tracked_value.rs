@@ -24,7 +24,10 @@ use std::{
     sync::Arc,
 };
 
-use crate::action::{context_builder::action, execute::ExecuteActionTrees};
+use crate::action::{
+    context_builder::{action, rewind},
+    execute::ExecuteActionTrees,
+};
 use caaqi_context::{DetachedNode, ScopeKind, attach_node};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -80,9 +83,9 @@ impl RefValue {
 pub fn ref_<T: Send + Sync + 'static>(world: &mut World, value: T) -> Ref<T> {
     let ref_ = create_ref(world, value);
 
-    // rewind(move || {
-    //     drop_ref(ref_);
-    // });
+    rewind(world, move |world| {
+        drop_ref(world, ref_);
+    });
 
     ref_
 }
@@ -91,9 +94,9 @@ pub fn ref_<T: Send + Sync + 'static>(world: &mut World, value: T) -> Ref<T> {
 pub fn ref_uninit<T: Send + Sync + 'static>(world: &mut World) -> Ref<T> {
     let ref_ = create_ref_uninit::<T>(world);
 
-    // rewind(move || {
-    //     drop_ref(ref_);
-    // });
+    rewind(world, move |world| {
+        drop_ref(world, ref_);
+    });
 
     ref_
 }

@@ -3,9 +3,7 @@ use bevy::{ecs::world::DeferredWorld, prelude::*};
 use bevy_caaqi::{
     CaaqiPlugin,
     action::{
-        context_builder::{
-            action, action_root, defer_action_eval, detached_action, run_action_node,
-        },
+        context_builder::{action, action_root, defer_action_eval, detached_action, rewind},
         execute::{ExecuteActionTrees, FlushWrites},
     },
     tracked_value::{Ref, ref_, ref_action, ref_uninit},
@@ -54,59 +52,75 @@ fn setup_ui(mut commands: Commands) {
                 }
             });
         }
-    });
 
-    // equivalent to `defer_action_eval`
-    commands
-        .spawn((
-            Node {
-                width: Val::Px(500.0),
-                height: Val::Px(600.0),
-                ..default()
-            },
-            BackgroundColor(Color::hsl(0.0, 0.9, 0.5)),
-        ))
-        .observe(
-            |event: On<Pointer<Over>>, mut nodes: Query<&mut BackgroundColor>| {
-                if let Ok(mut color) = nodes.get_mut(event.entity) {
-                    color.0 = Color::hsl(0.0, 0.9, 0.8);
-                }
-            },
-        )
-        .observe(
-            |event: On<Pointer<Out>>, mut nodes: Query<&mut BackgroundColor>| {
-                if let Ok(mut color) = nodes.get_mut(event.entity) {
-                    color.0 = Color::hsl(0.0, 0.9, 0.5);
-                }
-            },
-        )
-        .with_children(|parent| {
-            for _ in 0..5 {
-                parent
-                    .spawn((
-                        Node {
-                            width: Val::Px(100.0),
-                            height: Val::Px(100.0),
-                            ..default()
-                        },
-                        BackgroundColor(Color::hsl(100.0, 0.9, 0.5)),
-                    ))
-                    .observe(
-                        |event: On<Pointer<Over>>, mut nodes: Query<&mut BackgroundColor>| {
-                            if let Ok(mut color) = nodes.get_mut(event.entity) {
-                                color.0 = Color::hsl(100.0, 0.9, 0.8);
-                            }
-                        },
-                    )
-                    .observe(
-                        |event: On<Pointer<Out>>, mut nodes: Query<&mut BackgroundColor>| {
-                            if let Ok(mut color) = nodes.get_mut(event.entity) {
-                                color.0 = Color::hsl(100.0, 0.9, 0.5);
-                            }
-                        },
-                    );
+        action(world, move |world| {
+            if *root_node.is_hovered.read(&mut *world) {
+                let mut child = NodeMutator::new(world);
+                root_node.add_child(world, child);
+                child.set_width(world, 100.0);
+                child.set_height(world, 100.0);
+                child.set_color(&mut *world, Color::hsl(200.0, 0.9, 0.5));
+            } else {
+                let mut long_child = NodeMutator::new(world);
+                root_node.add_child(world, long_child);
+                long_child.set_width(world, 400.0);
+                long_child.set_height(world, 100.0);
+                long_child.set_color(&mut *world, Color::hsl(300.0, 0.9, 0.5));
             }
         });
+    });
+
+    // // equivalent to `defer_action_eval`
+    // commands
+    //     .spawn((
+    //         Node {
+    //             width: Val::Px(500.0),
+    //             height: Val::Px(600.0),
+    //             ..default()
+    //         },
+    //         BackgroundColor(Color::hsl(0.0, 0.9, 0.5)),
+    //     ))
+    //     .observe(
+    //         |event: On<Pointer<Over>>, mut nodes: Query<&mut BackgroundColor>| {
+    //             if let Ok(mut color) = nodes.get_mut(event.entity) {
+    //                 color.0 = Color::hsl(0.0, 0.9, 0.8);
+    //             }
+    //         },
+    //     )
+    //     .observe(
+    //         |event: On<Pointer<Out>>, mut nodes: Query<&mut BackgroundColor>| {
+    //             if let Ok(mut color) = nodes.get_mut(event.entity) {
+    //                 color.0 = Color::hsl(0.0, 0.9, 0.5);
+    //             }
+    //         },
+    //     )
+    //     .with_children(|parent| {
+    //         for _ in 0..5 {
+    //             parent
+    //                 .spawn((
+    //                     Node {
+    //                         width: Val::Px(100.0),
+    //                         height: Val::Px(100.0),
+    //                         ..default()
+    //                     },
+    //                     BackgroundColor(Color::hsl(100.0, 0.9, 0.5)),
+    //                 ))
+    //                 .observe(
+    //                     |event: On<Pointer<Over>>, mut nodes: Query<&mut BackgroundColor>| {
+    //                         if let Ok(mut color) = nodes.get_mut(event.entity) {
+    //                             color.0 = Color::hsl(100.0, 0.9, 0.8);
+    //                         }
+    //                     },
+    //                 )
+    //                 .observe(
+    //                     |event: On<Pointer<Out>>, mut nodes: Query<&mut BackgroundColor>| {
+    //                         if let Ok(mut color) = nodes.get_mut(event.entity) {
+    //                             color.0 = Color::hsl(100.0, 0.9, 0.5);
+    //                         }
+    //                     },
+    //                 );
+    //         }
+    //     });
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +137,10 @@ impl NodeMutator {
                 ..Default::default()
             })
             .id();
+
+        rewind(world, move |world| {
+            world.entity_mut(node_entity).despawn();
+        });
 
         let children = ref_(world, Vec::new());
 
