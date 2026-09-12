@@ -20,37 +20,16 @@ fn setup_camera(mut commands: Commands) {
 
     defer_action_eval(commands.reborrow(), |world| {
         let mut count = ref_(world, 0);
-
-        let doubled = ref_action(world, move |world| {
-            println!("[doubled] read count");
-            let count_value = *count.read(world);
-
-            println!("[doubled] write doubled = {}", count_value * 2);
-            count_value * 2
-        });
-
-        let done = ref_action(world, move |world| {
-            println!("[done] read count");
-            let count_value = *count.read(world);
-
-            println!("[done] write done = {}", count_value == 10);
-            count_value == 10
-        });
+        let doubled = ref_action(world, move |world| *count.read(world) * 2);
+        let done = ref_action(world, move |world| *count.read(world) == 10);
 
         action(world, move |world| {
-            println!("[print] read done");
-            let done_value = *done.read(world);
-
-            if done_value {
-                println!("[print] read count");
+            if *done.read(world) {
                 let count_value = *count.read(world);
 
                 println!("Done! Count: {}", count_value);
             } else {
-                println!("[print] read count");
                 let count_value = *count.read(world);
-
-                println!("[print] read doubled");
                 let doubled_value = *doubled.read(world);
 
                 println!("Count: {}, Doubled: {}", count_value, doubled_value);
@@ -58,16 +37,8 @@ fn setup_camera(mut commands: Commands) {
         });
 
         action(world, move |world| {
-            println!("[increment] read done");
-            let done_value = *done.read(world);
-
-            if !done_value {
-                println!("[increment] write count");
+            if !*done.read(world) {
                 *count.write(world) += 1;
-
-                println!("[increment] finished count write");
-            } else {
-                println!("[increment] no write");
             }
         });
     });
