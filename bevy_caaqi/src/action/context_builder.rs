@@ -1,16 +1,22 @@
-use bevy::ecs::{
-    entity::Entity,
-    system::Commands,
-    world::{self, World},
+use std::{collections::HashSet, panic::Location};
+
+use bevy::{
+    ecs::{
+        entity::Entity,
+        query::With,
+        system::Commands,
+        world::{self, World},
+    },
+    platform::collections::HashMap,
 };
 use caaqi_context::{DetachedNode, ScopeKind, attach_node, collect_in_scope};
 
 use crate::{
     action::{
-        execute::ExecuteActionTree,
-        node::{ActionNode, Deps, Stale},
+        execute::{ExecuteActionTree, WriteLocations, WrittenTo},
+        node::{ActionLocation, ActionNode, Deps, Stale},
     },
-    tracked_value::{RefValue, SubscribeScope},
+    tracked_value::{RefInitLocation, RefValue, SubscribeScope},
 };
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
@@ -18,13 +24,23 @@ pub struct ActionScope;
 
 impl ScopeKind for ActionScope {}
 
+#[track_caller]
 pub fn detached_action(
     world: &mut World,
     action: impl FnMut(&mut World) + Send + Sync + 'static,
 ) -> DetachedNode<ActionScope> {
-    DetachedNode::from_entity(world.spawn(ActionNode(Box::new(action))).id()).into()
+    DetachedNode::from_entity(
+        world
+            .spawn((
+                ActionNode(Box::new(action)),
+                ActionLocation(Location::caller()),
+            ))
+            .id(),
+    )
+    .into()
 }
 
+#[track_caller]
 pub fn action(world: &mut World, action: impl FnMut(&mut World) + Send + Sync + 'static) {
     let node = detached_action(world, action);
     attach_node::<ActionScope>(world, node);
@@ -52,6 +68,49 @@ pub fn run_action_node(world: &mut World, node: Entity) {
     entity_mut.add_children(&sub_actions);
 
     entity_mut.insert(Deps(depends_on.into_iter().collect()));
+
+    let written_to = world
+        .get_resource_mut::<WrittenTo>()
+        .unwrap()
+        .drain()
+        .collect::<HashSet<_>>();
+
+    let mut affected_nodes = vec![];
+    let mut action_nodes =
+        world.query_filtered::<(Entity, &Deps, &ActionLocation), With<ActionNode>>();
+
+    for (node, deps, location) in action_nodes.iter_mut(world) {
+        let affected = !deps.is_disjoint(&written_to);
+
+        if affected {
+            affected_nodes.push((node, location.0));
+        }
+    }
+
+    for (affected, location) in &affected_nodes {
+        world.entity_mut(*affected).insert(Stale);
+    }
+
+    #[cfg(feature = "debug")]
+    for (ref_, write_locations) in world
+        .get_resource_mut::<WriteLocations>()
+        .unwrap()
+        .drain()
+        .collect::<HashMap<_, Vec<_>>>()
+    {
+        let ref_location = *world
+            .get::<RefInitLocation>(ref_)
+            .expect("the Ref has been deallocated");
+
+        println!(
+            "[execute_action_tree] Ref at location {} was written to at locations:",
+            *ref_location,
+        );
+
+        for write_location in write_locations {
+            println!("\t{}", *write_location);
+        }
+    }
 }
 
 pub fn action_root(action_root: impl FnMut(&mut World) + Send + Sync + 'static) -> ActionNode {

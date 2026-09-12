@@ -20,5 +20,8 @@ pub struct Deps(pub HashSet<Entity>);
 #[derive(Component, Debug, Default)]
 pub struct Stale;
 
+#[derive(Debug, Clone, Component, Deref, DerefMut)]
+pub struct ActionLocation(pub &'static std::panic::Location<'static>);
+
 // #[derive(Component)]
 // pub struct ActionRewind(pub Box<dyn FnOnce() + Send + Sync + 'static>);

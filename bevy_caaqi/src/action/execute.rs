@@ -3,9 +3,9 @@ use std::{collections::HashSet, ops::Deref};
 use crate::{
     action::{
         context_builder::{ActionScope, run_action_node},
-        node::{Deps, Stale},
+        node::{ActionLocation, Deps, Stale},
     },
-    tracked_value::{RefTypeErased, SubscribeScope},
+    tracked_value::{RefInitLocation, RefTypeErased, SubscribeScope},
 };
 use bevy::{
     ecs::{
@@ -16,6 +16,7 @@ use bevy::{
         system::Command,
         world::{EntityMut, EntityWorldMut, World},
     },
+    platform::collections::HashMap,
     prelude::{Deref, DerefMut},
 };
 use caaqi_context::collect_in_scope;
@@ -24,6 +25,9 @@ use crate::action::node::{self, ActionNode};
 
 #[derive(Debug, Default, Clone, Resource, Deref, DerefMut)]
 pub struct WrittenTo(HashSet<Entity>);
+
+#[derive(Debug, Default, Clone, Resource, Deref, DerefMut)]
+pub struct WriteLocations(HashMap<Entity, Vec<&'static std::panic::Location<'static>>>);
 
 pub struct ExecuteActionTree(pub Entity);
 
@@ -36,6 +40,7 @@ impl Command for ExecuteActionTree {
         let root = parents.root_ancestor(self.0);
 
         world.init_resource::<WrittenTo>();
+        world.init_resource::<WriteLocations>();
 
         fn rec(
             node: Entity,
@@ -61,23 +66,16 @@ impl Command for ExecuteActionTree {
         let mut tree_query_state = world.query_filtered::<&Children, With<ActionNode>>();
         rec(root, world, &mut tree_query_state);
 
-        let written_to = world.remove_resource::<WrittenTo>().unwrap();
+        world.remove_resource::<WrittenTo>();
+        world.remove_resource::<WriteLocations>();
 
-        let mut affected_nodes = vec![];
-        let mut action_nodes = world.query_filtered::<(Entity, &Deps), With<ActionNode>>();
-        for (node, deps) in action_nodes.iter_mut(world) {
-            let affected = !deps.is_disjoint(&*written_to);
+        let has_stale_nodes = world
+            .query_filtered::<Entity, (With<Stale>, With<ActionNode>)>()
+            .iter(world)
+            .next()
+            .is_some();
 
-            if affected {
-                affected_nodes.push(node);
-            }
-        }
-
-        for affected in &affected_nodes {
-            world.entity_mut(*affected).insert(Stale);
-        }
-
-        if affected_nodes.len() > 0 {
+        if has_stale_nodes {
             world.commands().queue(ExecuteActionTree(root));
         }
     }

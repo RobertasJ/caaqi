@@ -13,10 +13,14 @@ use std::{
     any::Any,
     marker::PhantomData,
     ops::{Deref, DerefMut},
+    panic::Location,
     sync::Arc,
 };
 
-use crate::action::{context_builder::action, execute::WrittenTo};
+use crate::action::{
+    context_builder::action,
+    execute::{WriteLocations, WrittenTo},
+};
 use caaqi_context::{DetachedNode, ScopeKind, attach_node};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +45,9 @@ pub struct RefTypeErased(Entity);
 #[derive(Component)]
 pub struct RefValue(Option<Arc<AtomicRefCell<Box<dyn Any + Send + Sync + 'static>>>>);
 
+#[derive(Component, Clone, Copy, Deref, DerefMut)]
+pub struct RefInitLocation(&'static Location<'static>);
+
 impl RefValue {
     fn new<T: Any + Send + Sync + 'static>(value: T) -> Self {
         Self(Some(Arc::new(AtomicRefCell::from(
@@ -59,6 +66,7 @@ impl RefValue {
     }
 }
 
+#[track_caller]
 pub fn ref_<T: Send + Sync + 'static>(world: &mut World, value: T) -> Ref<T> {
     let ref_ = create_ref(world, value);
 
@@ -69,6 +77,7 @@ pub fn ref_<T: Send + Sync + 'static>(world: &mut World, value: T) -> Ref<T> {
     ref_
 }
 
+#[track_caller]
 pub fn ref_uninit<T: Send + Sync + 'static>(world: &mut World) -> Ref<T> {
     let ref_ = create_ref_uninit::<T>(world);
 
@@ -79,27 +88,35 @@ pub fn ref_uninit<T: Send + Sync + 'static>(world: &mut World) -> Ref<T> {
     ref_
 }
 
+#[track_caller]
 pub fn ref_action<T: Send + Sync + 'static>(
     world: &mut World,
     mut computation: impl FnMut(&mut World) -> T + Send + Sync + 'static,
 ) -> Ref<T> {
     let mut ref_ = ref_uninit::<T>(world);
+    let location = Location::caller();
 
     action(world, move |world| {
         let value = computation(world);
-        ref_.set_or_init(world, value);
+        ref_.set_or_init_with_caller(world, value, location);
     });
 
     ref_
 }
 
+#[track_caller]
 pub fn create_ref<T: Any + Send + Sync + 'static>(world: &mut World, value: T) -> Ref<T> {
-    let entity = world.spawn(RefValue::new(value)).id();
+    let entity = world
+        .spawn((RefValue::new(value), RefInitLocation(Location::caller())))
+        .id();
     Ref(entity, std::marker::PhantomData)
 }
 
+#[track_caller]
 pub fn create_ref_uninit<T: Send + Sync + 'static>(world: &mut World) -> Ref<T> {
-    let entity = world.spawn(RefValue::new_uninit()).id();
+    let entity = world
+        .spawn((RefValue::new_uninit(), RefInitLocation(Location::caller())))
+        .id();
     Ref(entity, std::marker::PhantomData)
 }
 
@@ -108,6 +125,7 @@ pub fn drop_ref<T: Any + Send + Sync + 'static>(world: &mut World, ref_: Ref<T>)
 }
 
 impl<T: Any + Send + Sync + 'static> Ref<T> {
+    #[track_caller]
     pub fn set_or_init(&mut self, world: &mut World, value: T) {
         if self
             .value(world)
@@ -115,7 +133,7 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
             .flatten()
             .is_some()
         {
-            *self.write(world) = value;
+            self.set(world, value);
         } else {
             self.entity_mut(world)
                 .expect("the Ref has been deallocated")
@@ -126,19 +144,75 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
         }
     }
 
+    pub fn set_or_init_with_caller(
+        &mut self,
+        world: &mut World,
+        value: T,
+        caller: &'static Location<'static>,
+    ) {
+        if self
+            .value(world)
+            .map(|v| v.0.as_deref())
+            .flatten()
+            .is_some()
+        {
+            self.set_with_caller(world, value, caller);
+        } else {
+            self.entity_mut(world)
+                .expect("the Ref has been deallocated")
+                .get_mut::<RefValue>()
+                .expect("the Ref is not initialized")
+                .init(value);
+            self.notify_with_caller(world, caller);
+        }
+    }
+
+    #[track_caller]
     pub fn subscribe(&self, world: &mut World) {
         attach_node(world, DetachedNode::<SubscribeScope>::from_entity(self.0));
     }
 
+    #[track_caller]
     pub fn notify(&self, world: &mut World) {
         world
             .get_resource_mut::<WrittenTo>()
             .unwrap()
             .insert(self.0);
+
+        world
+            .get_resource_mut::<WriteLocations>()
+            .unwrap()
+            .entry(self.0)
+            .or_default()
+            .push(Location::caller());
     }
 
+    pub fn notify_with_caller(&self, world: &mut World, caller: &'static Location<'static>) {
+        world
+            .get_resource_mut::<WrittenTo>()
+            .unwrap()
+            .insert(self.0);
+
+        world
+            .get_resource_mut::<WriteLocations>()
+            .unwrap()
+            .entry(self.0)
+            .or_default()
+            .push(caller);
+    }
+
+    #[track_caller]
     pub fn set(&mut self, world: &mut World, value: T) {
         *self.write(world) = value;
+    }
+
+    pub fn set_with_caller(
+        &mut self,
+        world: &mut World,
+        value: T,
+        caller: &'static Location<'static>,
+    ) {
+        *self.write_with_caller(world, caller) = value;
     }
 
     #[track_caller]
@@ -158,6 +232,16 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
     #[track_caller]
     pub fn write(&mut self, world: &mut World) -> WriteRef<T> {
         self.notify(world);
+
+        self.silent_write(world)
+    }
+
+    pub fn write_with_caller(
+        &mut self,
+        world: &mut World,
+        caller: &'static Location<'static>,
+    ) -> WriteRef<T> {
+        self.notify_with_caller(world, caller);
 
         self.silent_write(world)
     }
