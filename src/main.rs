@@ -8,7 +8,7 @@ use bevy_caaqi::{
         },
         execute::{ExecuteActionTrees, FlushWrites},
     },
-    tracked_value::{Ref, ref_, ref_action},
+    tracked_value::{Ref, ref_, ref_action, ref_uninit},
 };
 
 fn main() {
@@ -21,59 +21,190 @@ fn main() {
 fn setup_ui(mut commands: Commands) {
     commands.spawn(Camera2d);
 
-    // it took me 3 weeks to come up with this... and i've barely gotten started with the implementation.
-    // without using Refs, action blocks do nothing, they just wrap code.
-    // when you create a ref_ you give it an initial value, .write on a ref is the same as trigering a
-    // re-run of the whole action tree, but as if ref_ had the initial value set to what you wrote to it
-    // when calling .write.
-    // when the rerun happens, it skips running action blocks that don't depend on the ref_ that was written to.
-    // this exaple is also still pretty incomplete since i haven't
-    // implemented rewind blocks yet which would clean up changes to controlled global state.
-
-    // most convoluted way to keep ui up to date.
-    // code is a bit messy, but it works. this is the simplest example without any abstractions so it's why it looks messy.
     defer_action_eval(commands.reborrow(), |world| {
-        // this root action block
-        let mut color = ref_(world, Color::BLACK);
-        let init_color = *color.silent_read(&mut *world);
-        // this never gets run again. the root scope doesn't depend on color
-        let mut entity_mut = world.spawn((
-            Node {
-                width: Val::Px(100.0),
-                height: Val::Px(100.0),
-                ..Default::default()
-            },
-            BackgroundColor(init_color),
-        ));
-        let root_node = entity_mut.id();
-        entity_mut
-            .observe(move |_ev: On<Pointer<Enter>>, mut world: DeferredWorld| {
-                info!("Pointer entered node");
-                color.set(world.reborrow(), Color::WHITE);
+        let mut root_node = NodeMutator::new(world);
 
-                // need to make the rewrites mark action blocks as stale
-                world.commands().queue(FlushWrites);
-                // queues the evaluation of the action tree. Make sure your action tree converges to a stable state!!
-                world.commands().queue(ExecuteActionTrees);
+        root_node.observe(world, move |ev: On<Pointer<Click>>, mut world| {
+            println!("Root node clicked!");
+        });
+
+        root_node.set_width(world, 500.0);
+        root_node.set_height(world, 600.0);
+
+        action(world, move |world| {
+            if *root_node.is_hovered.read(&mut *world) {
+                root_node.set_color(&mut *world, Color::hsl(0.0, 0.9, 0.8));
+            } else {
+                root_node.set_color(&mut *world, Color::hsl(0.0, 0.9, 0.5));
+            }
+        });
+
+        for _ in 0..5 {
+            let mut child = NodeMutator::new(world);
+            root_node.add_child(world, child);
+
+            child.set_width(world, 100.0);
+            child.set_height(world, 100.0);
+
+            action(world, move |world| {
+                if *child.is_hovered.read(&mut *world) {
+                    child.set_color(&mut *world, Color::hsl(100.0, 0.9, 0.8));
+                } else {
+                    child.set_color(&mut *world, Color::hsl(100.0, 0.9, 0.5));
+                }
+            });
+        }
+    });
+
+    // equivalent to `defer_action_eval`
+    commands
+        .spawn((
+            Node {
+                width: Val::Px(500.0),
+                height: Val::Px(600.0),
+                ..default()
+            },
+            BackgroundColor(Color::hsl(0.0, 0.9, 0.5)),
+        ))
+        .observe(
+            |event: On<Pointer<Over>>, mut nodes: Query<&mut BackgroundColor>| {
+                if let Ok(mut color) = nodes.get_mut(event.entity) {
+                    color.0 = Color::hsl(0.0, 0.9, 0.8);
+                }
+            },
+        )
+        .observe(
+            |event: On<Pointer<Out>>, mut nodes: Query<&mut BackgroundColor>| {
+                if let Ok(mut color) = nodes.get_mut(event.entity) {
+                    color.0 = Color::hsl(0.0, 0.9, 0.5);
+                }
+            },
+        )
+        .with_children(|parent| {
+            for _ in 0..5 {
+                parent
+                    .spawn((
+                        Node {
+                            width: Val::Px(100.0),
+                            height: Val::Px(100.0),
+                            ..default()
+                        },
+                        BackgroundColor(Color::hsl(100.0, 0.9, 0.5)),
+                    ))
+                    .observe(
+                        |event: On<Pointer<Over>>, mut nodes: Query<&mut BackgroundColor>| {
+                            if let Ok(mut color) = nodes.get_mut(event.entity) {
+                                color.0 = Color::hsl(100.0, 0.9, 0.8);
+                            }
+                        },
+                    )
+                    .observe(
+                        |event: On<Pointer<Out>>, mut nodes: Query<&mut BackgroundColor>| {
+                            if let Ok(mut color) = nodes.get_mut(event.entity) {
+                                color.0 = Color::hsl(100.0, 0.9, 0.5);
+                            }
+                        },
+                    );
+            }
+        });
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NodeMutator {
+    node_entity: Entity,
+    children: Ref<Vec<NodeMutator>>,
+    is_hovered: Ref<bool>,
+}
+
+impl NodeMutator {
+    fn new(world: &mut World) -> Self {
+        let node_entity = world
+            .spawn(Node {
+                ..Default::default()
             })
-            .observe(move |_ev: On<Pointer<Leave>>, mut world: DeferredWorld| {
-                info!("Pointer left node");
-                color.set(world.reborrow(), Color::BLACK);
+            .id();
+
+        let children = ref_(world, Vec::new());
+
+        let mut is_hovered = ref_(world, false);
+
+        let mut self_ = Self {
+            node_entity,
+            children,
+            is_hovered,
+        };
+
+        self_.observe(world, move |ev: On<Pointer<Over>>, mut world| {
+            is_hovered.set(world, true);
+        });
+
+        self_.observe(world, move |ev: On<Pointer<Out>>, mut world| {
+            is_hovered.set(world, false);
+        });
+
+        self_
+    }
+
+    fn set_color<'a>(&mut self, world: impl Into<DeferredWorld<'a>>, color: Color) {
+        world
+            .into()
+            .entity_mut(self.node_entity)
+            .get_mut::<BackgroundColor>()
+            .unwrap()
+            .0 = color;
+    }
+
+    fn get_color<'a>(&self, world: impl Into<DeferredWorld<'a>>) -> Color {
+        world
+            .into()
+            .entity_mut(self.node_entity)
+            .get::<BackgroundColor>()
+            .unwrap()
+            .0
+    }
+
+    fn set_width(&mut self, world: &mut World, width: f32) {
+        world
+            .entity_mut(self.node_entity)
+            .get_mut::<Node>()
+            .unwrap()
+            .width = Val::Px(width);
+    }
+
+    fn set_height(&mut self, world: &mut World, height: f32) {
+        world
+            .entity_mut(self.node_entity)
+            .get_mut::<Node>()
+            .unwrap()
+            .height = Val::Px(height);
+    }
+
+    fn add_child(&mut self, world: &mut World, child: NodeMutator) -> NodeMutator {
+        world
+            .entity_mut(self.node_entity)
+            .add_child(child.node_entity);
+
+        self.children.write(world).push(child);
+
+        child
+    }
+
+    fn observe<E: EntityEvent + 'static>(
+        &mut self,
+        world: &mut World,
+        mut callback: impl FnMut(On<E>, DeferredWorld) + Send + Sync + 'static,
+    ) {
+        world
+            .entity_mut(self.node_entity)
+            .observe(move |ev: On<E>, mut world: DeferredWorld| {
+                callback(ev, world.reborrow());
 
                 world.commands().queue(FlushWrites);
                 world.commands().queue(ExecuteActionTrees);
             });
+    }
 
-        // gets rerun when the color is changed
-        // action blocks can be run multiple times by the executor
-        action(world, move |world| {
-            world
-                .entity_mut(root_node)
-                .get_mut::<BackgroundColor>()
-                .unwrap()
-                .0 = *color.read(&mut *world);
-        });
-    });
-
-    // run after the system exits
+    fn children(&self, world: &mut World) -> Vec<NodeMutator> {
+        self.children.read(world).clone()
+    }
 }

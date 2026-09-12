@@ -151,7 +151,7 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
                 .get_mut::<RefValue>()
                 .expect("the Ref is not initialized")
                 .init(value);
-            self.notify(world);
+            self.notify(world.reborrow());
         }
     }
 
@@ -181,15 +181,13 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
     }
 
     #[track_caller]
-    pub fn subscribe(&self, world: &mut DeferredWorld) {
-        attach_node(
-            world.reborrow(),
-            DetachedNode::<SubscribeScope>::from_entity(self.0),
-        );
+    pub fn subscribe<'a>(&self, world: impl Into<DeferredWorld<'a>>) {
+        attach_node(world, DetachedNode::<SubscribeScope>::from_entity(self.0));
     }
 
     #[track_caller]
-    pub fn notify(&self, world: &mut DeferredWorld) {
+    pub fn notify<'a>(&self, world: impl Into<DeferredWorld<'a>>) {
+        let world = &mut world.into();
         world
             .get_resource_mut::<WrittenTo>()
             .unwrap()
@@ -238,7 +236,7 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
     #[track_caller]
     pub fn read<'a>(&self, world: impl Into<DeferredWorld<'a>>) -> ReadRef<T> {
         let world = &mut world.into();
-        self.subscribe(world);
+        self.subscribe(world.reborrow());
 
         self.silent_read(world.reborrow())
     }
@@ -256,7 +254,7 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
     pub fn write<'a>(&mut self, world: impl Into<DeferredWorld<'a>>) -> WriteRef<T> {
         let world = &mut world.into();
 
-        self.notify(world);
+        self.notify(world.reborrow());
         self.silent_write(world.reborrow())
     }
 

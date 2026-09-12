@@ -39,7 +39,7 @@ impl Command for ExecuteActionTrees {
             world: &mut World,
             tree_query_state: &mut QueryState<&Children, With<ActionNode>>,
         ) {
-            if world.get::<Stale>(node).is_some() {
+            if world.get::<Stale>(node).is_some() && world.get::<ActionNode>(node).is_some() {
                 world.entity_mut(node).remove::<Stale>();
                 run_action_node(world, node);
             } else {

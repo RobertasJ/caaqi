@@ -3,8 +3,9 @@ use std::{collections::HashSet, panic::Location};
 use bevy::{
     ecs::{
         entity::Entity,
-        query::With,
-        system::Commands,
+        hierarchy::{ChildOf, Children},
+        query::{Has, Or, With},
+        system::{Commands, Query},
         world::{self, World},
     },
     log::debug,
@@ -15,7 +16,7 @@ use caaqi_context::{DetachedNode, ScopeKind, attach_node, collect_in_scope};
 use crate::{
     action::{
         execute::ExecuteActionTrees,
-        node::{ActionLocation, ActionNode, Deps, Stale},
+        node::{ActionLocation, ActionNode, ActionRewind, Deps, Stale},
     },
     tracked_value::{RefInitLocation, RefValue, SubscribeScope, WriteLocations, WrittenTo},
 };
@@ -49,6 +50,35 @@ pub fn action(world: &mut World, action: impl FnMut(&mut World) + Send + Sync + 
 }
 
 pub fn run_action_node(world: &mut World, node: Entity) {
+    let mut entity_mut = world.entity_mut(node);
+    entity_mut.despawn_children();
+
+    let mut rewinds = world
+        .query_filtered::<(Entity, &Children, &ChildOf, Has<ActionRewind>), Or<(With<ActionRewind>, With<ActionNode>)>>();
+    let rewinds = rewinds.query(world);
+
+    let mut rewinds_to_run = vec![];
+
+    fn rec(
+        node: Entity,
+        rewinds: &Query<
+            (Entity, &Children, &ChildOf, Has<ActionRewind>),
+            Or<(With<ActionRewind>, With<ActionNode>)>,
+        >,
+        rewinds_to_run: &mut Vec<Entity>,
+    ) {
+        for child in rewinds.get(node).unwrap().1 {
+            let (child_entity, _, _, has_rewind) = rewinds.get(*child).unwrap();
+            if has_rewind {
+                rewinds_to_run.push(child_entity);
+            } else {
+                rec(child_entity, rewinds, rewinds_to_run);
+            }
+        }
+    }
+
+    rec(node, &rewinds, &mut rewinds_to_run);
+
     let mut action_node = if let Some(action_node) = world.entity_mut(node).take::<ActionNode>() {
         action_node
     } else {
@@ -65,7 +95,6 @@ pub fn run_action_node(world: &mut World, node: Entity) {
 
     let mut entity_mut = world.entity_mut(node);
     entity_mut.insert(action_node);
-    entity_mut.despawn_children();
     entity_mut.add_children(&sub_actions);
 
     entity_mut.insert(Deps(depends_on.into_iter().collect()));
@@ -133,8 +162,7 @@ pub fn defer_action_eval(
     commands.queue(ExecuteActionTrees);
 }
 
-// pub fn rewind(undo: impl FnOnce() + Send + Sync + 'static) {
-//     attach_node::<ActionScope>(DetachedNode::from_entity(WorldContext::with(|ctx| {
-//         ctx.spawn(ActionRewind(Box::new(undo))).id()
-//     })));
-// }
+pub fn rewind(world: &mut World, undo: impl FnOnce(&mut World) + Send + Sync + 'static) {
+    let node = DetachedNode::from_entity(world.spawn(ActionRewind(Box::new(undo))).id());
+    attach_node::<ActionScope>(&mut *world, node);
+}
