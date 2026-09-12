@@ -1,12 +1,12 @@
 use std::marker::PhantomData;
 
 use bevy::{
-    ecs::{bundle::Bundle, entity::Entity, resource::Resource},
+    ecs::{bundle::Bundle, entity::Entity, resource::Resource, world::World},
     prelude::Deref,
 };
 use smallvec::SmallVec;
 
-use crate::WORLD;
+// use crate::WORLD;
 
 #[derive(Debug, Default, PartialEq, Eq, Resource)]
 struct AttachedNodes<S: ScopeKind>(SmallVec<[Entity; 1]>, PhantomData<S>);
@@ -30,47 +30,44 @@ impl<S: ScopeKind> DetachedNode<S> {
     }
 }
 
-pub fn collect_in_scope<S: ScopeKind, R>(scope: impl FnOnce() -> R) -> (R, SmallVec<[Entity; 1]>) {
-    let parent_attached = WORLD.with(|world| {
-        world
-            .get_resource_mut::<AttachedNodes<S>>()
-            .map(|mut r| std::mem::take(&mut r.0))
-            .or_else(|| {
-                world.insert_resource(AttachedNodes::<S>::default());
-                None
-            })
-    });
+pub fn collect_in_scope<S: ScopeKind, R>(
+    world: &mut World,
+    scope: impl FnOnce(&mut World) -> R,
+) -> (R, SmallVec<[Entity; 1]>) {
+    let parent_attached = world
+        .get_resource_mut::<AttachedNodes<S>>()
+        .map(|mut r| std::mem::take(&mut r.0))
+        .or_else(|| {
+            world.insert_resource(AttachedNodes::<S>::default());
+            None
+        });
 
-    let res = scope();
+    let res = scope(world);
 
-    let attached = WORLD.with(|world| {
-        if let Some(mut previously_attached) = parent_attached {
-            std::mem::swap(
-                &mut previously_attached,
-                &mut world
-                    .get_resource_mut::<AttachedNodes<S>>()
-                    .expect("no scope for node exists")
-                    .0,
-            );
+    let attached = if let Some(mut previously_attached) = parent_attached {
+        std::mem::swap(
+            &mut previously_attached,
+            &mut world
+                .get_resource_mut::<AttachedNodes<S>>()
+                .expect("no scope for node exists")
+                .0,
+        );
 
-            previously_attached
-        } else {
-            let nodes = world.remove_resource::<AttachedNodes<S>>();
-            nodes.unwrap().0
-        }
-    });
+        previously_attached
+    } else {
+        let nodes = world.remove_resource::<AttachedNodes<S>>();
+        nodes.unwrap().0
+    };
 
     (res, attached)
 }
 
-pub fn attach_node<S: ScopeKind>(node: DetachedNode<S>) {
-    WORLD.with(|world| {
-        world
-            .get_resource_mut::<AttachedNodes<S>>()
-            .expect("no scope for node exists")
-            .0
-            .push(*node)
-    });
+pub fn attach_node<S: ScopeKind>(world: &mut World, node: DetachedNode<S>) {
+    world
+        .get_resource_mut::<AttachedNodes<S>>()
+        .expect("no scope for node exists")
+        .0
+        .push(*node);
 }
 
 #[cfg(test)]
@@ -90,18 +87,12 @@ mod scope_tests {
     fn test_scope() {
         let mut world = World::new();
 
-        let (_, nodes) = WORLD.set(&mut world, || {
-            collect_in_scope::<TestScope, ()>(|| {
-                let (entity1, entity2) = WORLD.with(|world| {
-                    let entity1 = world.spawn(Num(42)).id();
-                    let entity2 = world.spawn(Num(43)).id();
+        let (_, nodes) = collect_in_scope::<TestScope, ()>(&mut world, |world| {
+            let entity1 = world.spawn(Num(42)).id();
+            let entity2 = world.spawn(Num(43)).id();
 
-                    (entity1, entity2)
-                });
-
-                attach_node::<TestScope>(DetachedNode::from_entity(entity1));
-                attach_node::<TestScope>(DetachedNode::from_entity(entity2));
-            })
+            attach_node::<TestScope>(world, DetachedNode::from_entity(entity1));
+            attach_node::<TestScope>(world, DetachedNode::from_entity(entity2));
         });
 
         assert_eq!(nodes.len(), 2);

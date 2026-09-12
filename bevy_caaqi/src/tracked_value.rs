@@ -17,7 +17,7 @@ use std::{
 };
 
 use crate::action::{context_builder::action, execute::ShouldExecuteTree, node::NeedsRerun};
-use caaqi_context::{DetachedNode, ScopeKind, WORLD, attach_node};
+use caaqi_context::{DetachedNode, ScopeKind, attach_node};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SubscribeScope;
@@ -68,8 +68,8 @@ impl RefValue {
     }
 }
 
-pub fn ref_<T: Send + Sync + 'static>(value: T) -> Ref<T> {
-    let ref_ = create_ref(value);
+pub fn ref_<T: Send + Sync + 'static>(world: &mut World, value: T) -> Ref<T> {
+    let ref_ = create_ref(world, value);
 
     // rewind(move || {
     //     drop_ref(ref_);
@@ -78,8 +78,8 @@ pub fn ref_<T: Send + Sync + 'static>(value: T) -> Ref<T> {
     ref_
 }
 
-pub fn ref_uninit<T: Send + Sync + 'static>() -> Ref<T> {
-    let ref_ = create_ref_uninit::<T>();
+pub fn ref_uninit<T: Send + Sync + 'static>(world: &mut World) -> Ref<T> {
+    let ref_ = create_ref_uninit::<T>(world);
 
     // rewind(move || {
     //     drop_ref(ref_);
@@ -89,106 +89,94 @@ pub fn ref_uninit<T: Send + Sync + 'static>() -> Ref<T> {
 }
 
 pub fn ref_action<T: Send + Sync + 'static>(
-    mut computation: impl FnMut() -> T + Send + Sync + 'static,
+    world: &mut World,
+    mut computation: impl FnMut(&mut World) -> T + Send + Sync + 'static,
 ) -> Ref<T> {
-    let mut ref_ = ref_uninit::<T>();
+    let mut ref_ = ref_uninit::<T>(world);
 
-    action(move || {
-        ref_.set_or_init(computation());
+    action(world, move |world| {
+        let value = computation(world);
+        ref_.set_or_init(world, value);
     });
 
     ref_
 }
 
-pub fn create_ref<T: Any + Send + Sync + 'static>(value: T) -> Ref<T> {
-    WORLD.with(|world| {
-        let entity = world.spawn(RefValue::new(value)).id();
-        Ref(entity, std::marker::PhantomData)
-    })
+pub fn create_ref<T: Any + Send + Sync + 'static>(world: &mut World, value: T) -> Ref<T> {
+    let entity = world.spawn((RefValue::new(value), Notify::default())).id();
+    Ref(entity, std::marker::PhantomData)
 }
 
-pub fn create_ref_uninit<T: Send + Sync + 'static>() -> Ref<T> {
-    WORLD.with(|world| {
-        let entity = world.spawn((RefValue::new_uninit())).id();
-        Ref(entity, std::marker::PhantomData)
-    })
+pub fn create_ref_uninit<T: Send + Sync + 'static>(world: &mut World) -> Ref<T> {
+    let entity = world
+        .spawn((RefValue::new_uninit(), Notify::default()))
+        .id();
+    Ref(entity, std::marker::PhantomData)
 }
 
-pub fn drop_ref<T: Any + Send + Sync + 'static>(ref_: Ref<T>) {
-    WORLD.with(|world| {
-        world.despawn(ref_.0);
-    });
+pub fn drop_ref<T: Any + Send + Sync + 'static>(world: &mut World, ref_: Ref<T>) {
+    world.despawn(ref_.0);
 }
 
 impl<T: Any + Send + Sync + 'static> Ref<T> {
-    pub fn set_or_init(&mut self, value: T) {
-        WORLD.with(|world| {
-            let mut entity_mut = self
-                .entity_mut(world)
-                .expect("the Ref has been deallocated");
-            let mut ref_value = entity_mut
-                .get_mut::<RefValue>()
-                .expect("Whoops, someone created a Ref incorrectly");
-            if let Some(data) = &ref_value.0 {
-                *data.borrow_mut() = Box::new(value);
-            } else {
-                ref_value.init(value);
-            }
-        });
+    pub fn set_or_init(&mut self, world: &mut World, value: T) {
+        let mut entity_mut = self
+            .entity_mut(world)
+            .expect("the Ref has been deallocated");
+        let mut ref_value = entity_mut
+            .get_mut::<RefValue>()
+            .expect("Whoops, someone created a Ref incorrectly");
+        if let Some(data) = &ref_value.0 {
+            *data.borrow_mut() = Box::new(value);
+        } else {
+            ref_value.init(value);
+        }
     }
 
-    pub fn subscribe(&self) {
-        attach_node(DetachedNode::<SubscribeScope>::from_entity(self.0));
+    pub fn subscribe(&self, world: &mut World) {
+        attach_node(world, DetachedNode::<SubscribeScope>::from_entity(self.0));
     }
 
-    pub fn notify(&self) {
-        WORLD.with(|world| {
-            let notify = world
-                .get::<Notify>(self.0)
-                .expect("the Ref is not initialized");
+    pub fn notify(&self, world: &mut World) {
+        let notify = world
+            .get::<Notify>(self.0)
+            .expect("the Ref is not initialized");
 
-            for subscriber in notify.clone().iter() {
-                world.get_mut::<NeedsRerun>(*subscriber).unwrap().0 = true;
-            }
+        for subscriber in notify.clone().iter() {
+            world.get_mut::<NeedsRerun>(*subscriber).unwrap().0 = true;
+        }
 
-            world.get_resource_mut::<ShouldExecuteTree>().unwrap().0 = true;
-        });
+        world.get_resource_mut::<ShouldExecuteTree>().unwrap().0 = true;
     }
 
-    pub fn set(&mut self, value: T) {
-        WORLD.with(|world| {
-            let ref_value = self.data(world).expect("the Ref is not initialized");
+    pub fn set(&mut self, world: &mut World, value: T) {
+        let ref_value = self.data(world).expect("the Ref is not initialized");
 
-            *ref_value.borrow_mut() = Box::new(value);
-        });
+        *ref_value.borrow_mut() = Box::new(value);
     }
 
-    pub fn read(&self) -> ReadRef<T> {
-        self.subscribe();
+    pub fn read(&self, world: &mut World) -> ReadRef<T> {
+        self.subscribe(world);
 
-        self.silent_read()
+        self.silent_read(world)
     }
 
-    fn silent_read(&self) -> ReadRef<T> {
-        WORLD.with(|world| {
-            let ref_value = self.data(world).expect("the Ref is not initialized");
+    fn silent_read(&self, world: &mut World) -> ReadRef<T> {
+        let ref_value = self.data(world).expect("the Ref is not initialized");
 
-            self.read_ref_value(ref_value)
-        })
+        self.read_ref_value(ref_value)
     }
 
-    pub fn write(&mut self) -> WriteRef<T> {
-        self.notify();
+    pub fn write(&mut self, world: &mut World) -> WriteRef<T> {
+        self.notify(world);
 
-        self.silent_write()
+        self.silent_write(world)
     }
 
-    fn silent_write(&mut self) -> WriteRef<T> {
-        WORLD.with(|world| {
-            let ref_value = self.data(world).expect("the Ref is not initialized");
+    fn silent_write(&mut self, world: &mut World) -> WriteRef<T> {
+        let ref_value = self.data(world).expect("the Ref is not initialized");
 
-            self.write_ref_value(ref_value)
-        })
+        self.write_ref_value(ref_value)
     }
 
     fn write_ref_value(

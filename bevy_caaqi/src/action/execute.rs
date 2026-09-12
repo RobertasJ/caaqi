@@ -12,7 +12,7 @@ use bevy::ecs::{
     system::Command,
     world::World,
 };
-use caaqi_context::{WORLD, collect_in_scope};
+use caaqi_context::collect_in_scope;
 
 use crate::action::node::{self, ActionNode, NeedsRerun};
 
@@ -43,9 +43,7 @@ impl Command for ExecuteActionTree {
             tree_query_state: &mut QueryState<&Children, With<ActionNode>>,
         ) {
             if world.get::<NeedsRerun>(node).unwrap().0 {
-                WORLD.set(world, || {
-                    run_action_node(node);
-                });
+                run_action_node(world, node);
 
                 world.get_mut::<NeedsRerun>(node).unwrap().0 = false;
             } else {
@@ -71,5 +69,7 @@ impl Command for ExecuteActionTree {
         if should_execute_tree {
             world.commands().queue(ExecuteActionTree(root));
         }
+
+        world.flush();
     }
 }

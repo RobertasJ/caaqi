@@ -1,11 +1,15 @@
 use bevy::{
-    ecs::{component::Component, entity::Entity, world::FromWorld},
+    ecs::{
+        component::Component,
+        entity::Entity,
+        world::{FromWorld, World},
+    },
     ui::DefaultUiCamera,
 };
 
 #[derive(Component)]
 #[require(NeedsRerun)]
-pub struct ActionNode(pub Box<dyn FnMut() + Send + Sync + 'static>);
+pub struct ActionNode(pub Box<dyn FnMut(&mut World) + Send + Sync + 'static>);
 
 // #[derive(Component)]
 // pub struct ActionRewind(pub Box<dyn FnOnce() + Send + Sync + 'static>);
