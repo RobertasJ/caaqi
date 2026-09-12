@@ -14,10 +14,10 @@ use caaqi_context::{DetachedNode, ScopeKind, attach_node, collect_in_scope};
 
 use crate::{
     action::{
-        execute::{ExecuteActionTree, WriteLocations, WrittenTo},
+        execute::ExecuteActionTree,
         node::{ActionLocation, ActionNode, Deps, Stale},
     },
-    tracked_value::{RefInitLocation, RefValue, SubscribeScope},
+    tracked_value::{RefInitLocation, RefValue, SubscribeScope, WriteLocations, WrittenTo},
 };
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
@@ -70,6 +70,10 @@ pub fn run_action_node(world: &mut World, node: Entity) {
 
     entity_mut.insert(Deps(depends_on.into_iter().collect()));
 
+    flush_tracked_writes(world);
+}
+
+pub fn flush_tracked_writes(world: &mut World) {
     let written_to = world
         .get_resource_mut::<WrittenTo>()
         .unwrap()

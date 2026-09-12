@@ -2,14 +2,15 @@ use std::marker::PhantomData;
 
 use bevy::{
     ecs::{bundle::Bundle, entity::Entity, resource::Resource, world::World},
-    prelude::Deref,
+    log::warn,
+    prelude::{Deref, DerefMut},
 };
 use smallvec::SmallVec;
 
 // use crate::WORLD;
 
-#[derive(Debug, Default, PartialEq, Eq, Resource)]
-struct AttachedNodes<S: ScopeKind>(SmallVec<[Entity; 1]>, PhantomData<S>);
+#[derive(Debug, Default, PartialEq, Eq, Resource, Deref, DerefMut)]
+struct AttachedNodes<S: ScopeKind>(#[deref] SmallVec<[Entity; 1]>, PhantomData<S>);
 
 #[derive(Debug, PartialEq, Eq, Hash, Deref)]
 pub struct DetachedNode<S: ScopeKind>(#[deref] Entity, PhantomData<S>);
@@ -63,11 +64,15 @@ pub fn collect_in_scope<S: ScopeKind, R>(
 }
 
 pub fn attach_node<S: ScopeKind>(world: &mut World, node: DetachedNode<S>) {
-    world
-        .get_resource_mut::<AttachedNodes<S>>()
-        .expect("no scope for node exists")
-        .0
-        .push(*node);
+    if let Some(mut attached_nodes) = world.get_resource_mut::<AttachedNodes<S>>() {
+        attached_nodes.push(*node);
+    } else {
+        warn!(
+            "Attempted to attach node {:?} to scope {:?}, but no scope exists. Node will be dropped.",
+            *node,
+            std::any::type_name::<S>()
+        );
+    }
 }
 
 #[cfg(test)]

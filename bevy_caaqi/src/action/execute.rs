@@ -2,7 +2,7 @@ use std::{collections::HashSet, ops::Deref};
 
 use crate::{
     action::{
-        context_builder::{ActionScope, run_action_node},
+        context_builder::{ActionScope, flush_tracked_writes, run_action_node},
         node::{ActionLocation, Deps, Stale},
     },
     tracked_value::{RefInitLocation, RefTypeErased, SubscribeScope},
@@ -23,12 +23,6 @@ use caaqi_context::collect_in_scope;
 
 use crate::action::node::{self, ActionNode};
 
-#[derive(Debug, Default, Clone, Resource, Deref, DerefMut)]
-pub struct WrittenTo(HashSet<Entity>);
-
-#[derive(Debug, Default, Clone, Resource, Deref, DerefMut)]
-pub struct WriteLocations(HashMap<Entity, Vec<&'static std::panic::Location<'static>>>);
-
 pub struct ExecuteActionTree(pub Entity);
 
 impl Command for ExecuteActionTree {
@@ -38,9 +32,6 @@ impl Command for ExecuteActionTree {
         let mut parent_query = world.query_filtered::<&ChildOf, With<ActionNode>>();
         let parents = parent_query.query(world);
         let root = parents.root_ancestor(self.0);
-
-        world.init_resource::<WrittenTo>();
-        world.init_resource::<WriteLocations>();
 
         fn rec(
             node: Entity,
@@ -66,9 +57,6 @@ impl Command for ExecuteActionTree {
         let mut tree_query_state = world.query_filtered::<&Children, With<ActionNode>>();
         rec(root, world, &mut tree_query_state);
 
-        world.remove_resource::<WrittenTo>();
-        world.remove_resource::<WriteLocations>();
-
         let has_stale_nodes = world
             .query_filtered::<Entity, (With<Stale>, With<ActionNode>)>()
             .iter(world)
@@ -78,5 +66,15 @@ impl Command for ExecuteActionTree {
         if has_stale_nodes {
             world.commands().queue(ExecuteActionTree(root));
         }
+    }
+}
+
+pub struct FlushWrites;
+
+impl Command for FlushWrites {
+    type Out = ();
+
+    fn apply(self, world: &mut World) -> Self::Out {
+        flush_tracked_writes(world);
     }
 }

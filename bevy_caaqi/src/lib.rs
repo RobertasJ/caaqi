@@ -3,7 +3,10 @@ pub mod tracked_value;
 
 use bevy::prelude::*;
 
-use crate::action::context_builder::ActionScope;
+use crate::{
+    action::context_builder::ActionScope,
+    tracked_value::{WriteLocations, WrittenTo},
+};
 pub use caaqi_context::DetachedNode;
 
 #[derive(Debug, Component)]
@@ -28,5 +31,8 @@ pub enum CaaqiUiSystems {
 pub struct CaaqiPlugin;
 
 impl Plugin for CaaqiPlugin {
-    fn build(&self, app: &mut App) {}
+    fn build(&self, app: &mut App) {
+        app.init_resource::<WrittenTo>()
+            .init_resource::<WriteLocations>();
+    }
 }

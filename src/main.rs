@@ -19,71 +19,17 @@ fn setup_camera(mut commands: Commands) {
     commands.spawn(Camera2d);
 
     defer_action_eval(commands.reborrow(), |world| {
-        let mut count = ref_(world, 0);
-        let doubled = ref_action(world, move |world| *count.read(world) * 2);
-        let done = ref_action(world, move |world| *count.read(world) == 10);
+        let mut entity_mut = world.spawn((
+            Node {
+                width: Val::Px(100.0),
+                height: Val::Px(100.0),
+                ..Default::default()
+            },
+            BackgroundColor(Color::BLACK),
+        ));
+        let root_node = entity_mut.id();
+        entity_mut.observe(|ev: On<Pointer<Over>>, commands: Commands<'_, '_>| {});
 
-        action(world, move |world| {
-            if *done.read(world) {
-                let count_value = *count.read(world);
-
-                println!("Done! Count: {}", count_value);
-            } else {
-                let count_value = *count.read(world);
-                let doubled_value = *doubled.read(world);
-
-                println!("Count: {}, Doubled: {}", count_value, doubled_value);
-            }
-        });
-
-        action(world, move |world| {
-            if !*done.read(world) {
-                *count.write(world) += 1;
-            }
-        });
+        action(world, move |world| {});
     });
-}
-
-struct SizeData {
-    width: Ref<f32>,
-    height: Ref<f32>,
-    inner_width: Ref<f32>,
-    inner_height: Ref<f32>,
-}
-
-struct LayoutNode {
-    size: SizeData,
-    children: Vec<LayoutNode>,
-}
-
-impl LayoutNode {
-    fn new(world: &mut World, width: f32, height: f32) -> Self {
-        let size = SizeData {
-            width: ref_(world, width),
-            height: ref_(world, height),
-            inner_width: ref_(world, width),
-            inner_height: ref_(world, height),
-        };
-
-        Self {
-            size,
-            children: Vec::new(),
-        }
-    }
-
-    fn add_child(&mut self, child: LayoutNode) {
-        self.children.push(child);
-    }
-
-    // fn calculate_size(&self, world: &mut World) {
-    //     let width = *self.size.width.get(world);
-    //     let height = *self.size.height.get(world);
-
-    //     self.size.inner_width.init(world, width);
-    //     self.size.inner_height.init(world, height);
-
-    //     for child in &self.children {
-    //         child.calculate_size(world);
-    //     }
-    // }
 }

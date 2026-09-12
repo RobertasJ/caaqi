@@ -3,6 +3,8 @@ use bevy::{
     ecs::{
         component::Component,
         entity::{Entity, EntityNotSpawnedError},
+        resource::Resource,
+        system::command,
         world::{EntityRef, EntityWorldMut, Mut, World, error::EntityMutableFetchError},
     },
     prelude::{Deref, DerefMut},
@@ -11,16 +13,14 @@ use ouroboros::self_referencing;
 use smallvec::SmallVec;
 use std::{
     any::Any,
+    collections::{HashMap, HashSet},
     marker::PhantomData,
     ops::{Deref, DerefMut},
     panic::Location,
     sync::Arc,
 };
 
-use crate::action::{
-    context_builder::action,
-    execute::{WriteLocations, WrittenTo},
-};
+use crate::action::context_builder::action;
 use caaqi_context::{DetachedNode, ScopeKind, attach_node};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +47,12 @@ pub struct RefValue(Option<Arc<AtomicRefCell<Box<dyn Any + Send + Sync + 'static
 
 #[derive(Component, Clone, Copy, Deref, DerefMut)]
 pub struct RefInitLocation(&'static Location<'static>);
+
+#[derive(Debug, Default, Clone, Resource, Deref, DerefMut)]
+pub struct WrittenTo(HashSet<Entity>);
+
+#[derive(Debug, Default, Clone, Resource, Deref, DerefMut)]
+pub struct WriteLocations(HashMap<Entity, Vec<&'static std::panic::Location<'static>>>);
 
 impl RefValue {
     fn new<T: Any + Send + Sync + 'static>(value: T) -> Self {
