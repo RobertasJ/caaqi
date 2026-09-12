@@ -109,16 +109,20 @@ pub fn drop_ref<T: Any + Send + Sync + 'static>(world: &mut World, ref_: Ref<T>)
 
 impl<T: Any + Send + Sync + 'static> Ref<T> {
     pub fn set_or_init(&mut self, world: &mut World, value: T) {
-        let mut entity_mut = self
-            .entity_mut(world)
-            .expect("the Ref has been deallocated");
-        let mut ref_value = entity_mut
-            .get_mut::<RefValue>()
-            .expect("Whoops, someone created a Ref incorrectly");
-        if let Some(data) = &ref_value.0 {
-            *data.borrow_mut() = Box::new(value);
+        if self
+            .value(world)
+            .map(|v| v.0.as_deref())
+            .flatten()
+            .is_some()
+        {
+            *self.write(world) = value;
         } else {
-            ref_value.init(value);
+            self.entity_mut(world)
+                .expect("the Ref has been deallocated")
+                .get_mut::<RefValue>()
+                .expect("the Ref is not initialized")
+                .init(value);
+            self.notify(world);
         }
     }
 
@@ -134,29 +138,31 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
     }
 
     pub fn set(&mut self, world: &mut World, value: T) {
-        let ref_value = self.data(world).expect("the Ref is not initialized");
-
-        *ref_value.borrow_mut() = Box::new(value);
+        *self.write(world) = value;
     }
 
+    #[track_caller]
     pub fn read(&self, world: &mut World) -> ReadRef<T> {
         self.subscribe(world);
 
         self.silent_read(world)
     }
 
+    #[track_caller]
     fn silent_read(&self, world: &mut World) -> ReadRef<T> {
         let ref_value = self.data(world).expect("the Ref is not initialized");
 
         self.read_ref_value(ref_value)
     }
 
+    #[track_caller]
     pub fn write(&mut self, world: &mut World) -> WriteRef<T> {
         self.notify(world);
 
         self.silent_write(world)
     }
 
+    #[track_caller]
     fn silent_write(&mut self, world: &mut World) -> WriteRef<T> {
         let ref_value = self.data(world).expect("the Ref is not initialized");
 
@@ -177,28 +183,28 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
         ReadRef::new(Arc::clone(ref_value), |arc| arc.borrow(), PhantomData)
     }
 
-    fn value<'a>(&self, ctx: &'a mut World) -> Option<&'a RefValue> {
-        self.entity(ctx)
+    fn value<'a>(&self, world: &'a mut World) -> Option<&'a RefValue> {
+        self.entity(world)
             .expect("the Ref has been deallocated")
             .get::<RefValue>()
     }
 
     fn data<'a>(
         &self,
-        ctx: &'a mut World,
+        world: &'a mut World,
     ) -> Option<&'a Arc<AtomicRefCell<Box<dyn Any + Send + Sync + 'static>>>> {
-        self.value(ctx).and_then(|ref_value| ref_value.0.as_ref())
+        self.value(world).and_then(|ref_value| ref_value.0.as_ref())
     }
 
-    fn entity<'a>(&self, ctx: &'a mut World) -> Result<EntityRef<'a>, EntityNotSpawnedError> {
-        ctx.get_entity(self.0)
+    fn entity<'a>(&self, world: &'a mut World) -> Result<EntityRef<'a>, EntityNotSpawnedError> {
+        world.get_entity(self.0)
     }
 
     fn entity_mut<'a>(
         &self,
-        ctx: &'a mut World,
+        world: &'a mut World,
     ) -> Result<EntityWorldMut<'a>, EntityMutableFetchError> {
-        ctx.get_entity_mut(self.0)
+        world.get_entity_mut(self.0)
     }
 
     pub fn into_erased(self) -> RefTypeErased {
