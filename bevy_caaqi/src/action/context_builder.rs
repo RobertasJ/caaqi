@@ -8,9 +8,9 @@ use caaqi_context::{DetachedNode, ScopeKind, attach_node, collect_in_scope};
 use crate::{
     action::{
         execute::ExecuteActionTree,
-        node::{ActionNode, NeedsRerun},
+        node::{ActionNode, Deps, Stale},
     },
-    tracked_value::{Notify, SubscribeScope},
+    tracked_value::{RefValue, SubscribeScope},
 };
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
@@ -25,14 +25,12 @@ pub fn detached_action(
     DetachedNode::from_entity(world.spawn(ActionNode(Box::new(action))).id()).into()
 }
 
-#[track_caller]
 pub fn action(world: &mut World, action: impl FnMut(&mut World) + Send + Sync + 'static) {
     let node = detached_action(world, action);
     attach_node::<ActionScope>(world, node);
     run_action_node(world, *node);
 }
 
-#[track_caller]
 pub fn run_action_node(world: &mut World, node: Entity) {
     let mut action_node = if let Some(action_node) = world.entity_mut(node).take::<ActionNode>() {
         action_node
@@ -40,25 +38,20 @@ pub fn run_action_node(world: &mut World, node: Entity) {
         panic!("entity {:?} is not an ActionNode", node);
     };
 
-    let ((_, depends_on), sub_actions) = collect_in_scope::<SubscribeScope, _>(world, |world| {
+    let (action_result, depends_on) = collect_in_scope::<SubscribeScope, _>(world, |world| {
         collect_in_scope::<ActionScope, _>(world, |world| {
             (action_node.0)(world);
         })
     });
+
+    let (_, sub_actions) = action_result;
 
     let mut entity_mut = world.entity_mut(node);
     entity_mut.insert(action_node);
     entity_mut.despawn_children();
     entity_mut.add_children(&sub_actions);
 
-    for dep in depends_on {
-        world
-            .get_entity_mut(dep)
-            .unwrap()
-            .get_mut::<Notify>()
-            .unwrap()
-            .push(node);
-    }
+    entity_mut.insert(Deps(depends_on.into_iter().collect()));
 }
 
 pub fn action_root(action_root: impl FnMut(&mut World) + Send + Sync + 'static) -> ActionNode {
@@ -71,7 +64,7 @@ pub fn defer_action_eval(
 ) {
     let node = action_root(action);
 
-    let node = commands.spawn((node, NeedsRerun(true))).id();
+    let node = commands.spawn((node, Stale)).id();
 
     commands.queue(ExecuteActionTree(node));
 }

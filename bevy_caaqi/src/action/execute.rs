@@ -1,29 +1,29 @@
-use std::ops::Deref;
+use std::{collections::HashSet, ops::Deref};
 
 use crate::{
-    action::context_builder::{ActionScope, run_action_node},
-    tracked_value::{Notify, SubscribeScope},
+    action::{
+        context_builder::{ActionScope, run_action_node},
+        node::{Deps, Stale},
+    },
+    tracked_value::{RefTypeErased, SubscribeScope},
 };
-use bevy::ecs::{
-    entity::Entity,
-    hierarchy::{ChildOf, Children},
-    query::{QueryState, With},
-    resource::Resource,
-    system::Command,
-    world::World,
+use bevy::{
+    ecs::{
+        entity::Entity,
+        hierarchy::{ChildOf, Children},
+        query::{QueryState, With},
+        resource::Resource,
+        system::Command,
+        world::{EntityMut, EntityWorldMut, World},
+    },
+    prelude::{Deref, DerefMut},
 };
 use caaqi_context::collect_in_scope;
 
-use crate::action::node::{self, ActionNode, NeedsRerun};
+use crate::action::node::{self, ActionNode};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Resource)]
-pub struct ShouldExecuteTree(pub bool);
-
-impl Default for ShouldExecuteTree {
-    fn default() -> Self {
-        Self(false)
-    }
-}
+#[derive(Debug, Default, Clone, Resource, Deref, DerefMut)]
+pub struct WrittenTo(HashSet<Entity>);
 
 pub struct ExecuteActionTree(pub Entity);
 
@@ -35,25 +35,22 @@ impl Command for ExecuteActionTree {
         let parents = parent_query.query(world);
         let root = parents.root_ancestor(self.0);
 
-        world.init_resource::<ShouldExecuteTree>();
+        world.init_resource::<WrittenTo>();
 
         fn rec(
             node: Entity,
             world: &mut World,
             tree_query_state: &mut QueryState<&Children, With<ActionNode>>,
         ) {
-            if world.get::<NeedsRerun>(node).unwrap().0 {
+            if world.get::<Stale>(node).is_some() {
+                world.entity_mut(node).remove::<Stale>();
                 run_action_node(world, node);
-
-                world.get_mut::<NeedsRerun>(node).unwrap().0 = false;
             } else {
                 let children = tree_query_state
                     .query(world)
                     .get(node)
-                    .unwrap()
-                    .iter()
-                    .copied()
-                    .collect::<Vec<_>>();
+                    .map(|c| c.to_vec())
+                    .unwrap_or_default();
 
                 for child in children {
                     rec(child, world, tree_query_state);
@@ -64,12 +61,24 @@ impl Command for ExecuteActionTree {
         let mut tree_query_state = world.query_filtered::<&Children, With<ActionNode>>();
         rec(root, world, &mut tree_query_state);
 
-        let should_execute_tree = world.get_resource_mut::<ShouldExecuteTree>().unwrap().0;
+        let written_to = world.remove_resource::<WrittenTo>().unwrap();
 
-        if should_execute_tree {
-            world.commands().queue(ExecuteActionTree(root));
+        let mut affected_nodes = vec![];
+        let mut action_nodes = world.query_filtered::<(Entity, &Deps), With<ActionNode>>();
+        for (node, deps) in action_nodes.iter_mut(world) {
+            let affected = !deps.is_disjoint(&*written_to);
+
+            if affected {
+                affected_nodes.push(node);
+            }
         }
 
-        world.flush();
+        for affected in &affected_nodes {
+            world.entity_mut(*affected).insert(Stale);
+        }
+
+        if affected_nodes.len() > 0 {
+            world.commands().queue(ExecuteActionTree(root));
+        }
     }
 }

@@ -16,18 +16,13 @@ use std::{
     sync::Arc,
 };
 
-use crate::action::{context_builder::action, execute::ShouldExecuteTree, node::NeedsRerun};
+use crate::action::{context_builder::action, execute::WrittenTo};
 use caaqi_context::{DetachedNode, ScopeKind, attach_node};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SubscribeScope;
 
 impl ScopeKind for SubscribeScope {}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct NotifyScope;
-
-impl ScopeKind for NotifyScope {}
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Ref<T: Send + Sync + 'static>(Entity, std::marker::PhantomData<T>);
@@ -40,15 +35,11 @@ impl<T: Send + Sync + 'static> Clone for Ref<T> {
 
 impl<T: Send + Sync + 'static> Copy for Ref<T> {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct RefTypeErased(Entity);
 
 #[derive(Component)]
-#[require(Notify)]
-struct RefValue(Option<Arc<AtomicRefCell<Box<dyn Any + Send + Sync + 'static>>>>);
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Component, Deref, DerefMut)]
-pub struct Notify(SmallVec<[Entity; 1]>);
+pub struct RefValue(Option<Arc<AtomicRefCell<Box<dyn Any + Send + Sync + 'static>>>>);
 
 impl RefValue {
     fn new<T: Any + Send + Sync + 'static>(value: T) -> Self {
@@ -103,14 +94,12 @@ pub fn ref_action<T: Send + Sync + 'static>(
 }
 
 pub fn create_ref<T: Any + Send + Sync + 'static>(world: &mut World, value: T) -> Ref<T> {
-    let entity = world.spawn((RefValue::new(value), Notify::default())).id();
+    let entity = world.spawn(RefValue::new(value)).id();
     Ref(entity, std::marker::PhantomData)
 }
 
 pub fn create_ref_uninit<T: Send + Sync + 'static>(world: &mut World) -> Ref<T> {
-    let entity = world
-        .spawn((RefValue::new_uninit(), Notify::default()))
-        .id();
+    let entity = world.spawn(RefValue::new_uninit()).id();
     Ref(entity, std::marker::PhantomData)
 }
 
@@ -138,15 +127,10 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
     }
 
     pub fn notify(&self, world: &mut World) {
-        let notify = world
-            .get::<Notify>(self.0)
-            .expect("the Ref is not initialized");
-
-        for subscriber in notify.clone().iter() {
-            world.get_mut::<NeedsRerun>(*subscriber).unwrap().0 = true;
-        }
-
-        world.get_resource_mut::<ShouldExecuteTree>().unwrap().0 = true;
+        world
+            .get_resource_mut::<WrittenTo>()
+            .unwrap()
+            .insert(self.0);
     }
 
     pub fn set(&mut self, world: &mut World, value: T) {
