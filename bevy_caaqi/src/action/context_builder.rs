@@ -14,7 +14,7 @@ use caaqi_context::{DetachedNode, ScopeKind, attach_node, collect_in_scope};
 
 use crate::{
     action::{
-        execute::ExecuteActionTree,
+        execute::ExecuteActionTrees,
         node::{ActionLocation, ActionNode, Deps, Stale},
     },
     tracked_value::{RefInitLocation, RefValue, SubscribeScope, WriteLocations, WrittenTo},
@@ -44,7 +44,7 @@ pub fn detached_action(
 #[track_caller]
 pub fn action(world: &mut World, action: impl FnMut(&mut World) + Send + Sync + 'static) {
     let node = detached_action(world, action);
-    attach_node::<ActionScope>(world, node);
+    attach_node::<ActionScope>(&mut *world, node);
     run_action_node(world, *node);
 }
 
@@ -130,7 +130,7 @@ pub fn defer_action_eval(
 
     let node = commands.spawn((node, Stale)).id();
 
-    commands.queue(ExecuteActionTree(node));
+    commands.queue(ExecuteActionTrees);
 }
 
 // pub fn rewind(undo: impl FnOnce() + Send + Sync + 'static) {

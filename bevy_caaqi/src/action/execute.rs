@@ -11,7 +11,7 @@ use bevy::{
     ecs::{
         entity::Entity,
         hierarchy::{ChildOf, Children},
-        query::{QueryState, With},
+        query::{QueryState, With, Without},
         resource::Resource,
         system::Command,
         world::{EntityMut, EntityWorldMut, World},
@@ -23,15 +23,16 @@ use caaqi_context::collect_in_scope;
 
 use crate::action::node::{self, ActionNode};
 
-pub struct ExecuteActionTree(pub Entity);
+pub struct ExecuteActionTrees;
 
-impl Command for ExecuteActionTree {
+impl Command for ExecuteActionTrees {
     type Out = ();
 
     fn apply(self, world: &mut World) -> Self::Out {
-        let mut parent_query = world.query_filtered::<&ChildOf, With<ActionNode>>();
-        let parents = parent_query.query(world);
-        let root = parents.root_ancestor(self.0);
+        let root_nodes = world
+            .query_filtered::<Entity, (With<ActionNode>, Without<ChildOf>)>()
+            .iter(world)
+            .collect::<Vec<_>>();
 
         fn rec(
             node: Entity,
@@ -55,7 +56,9 @@ impl Command for ExecuteActionTree {
         }
 
         let mut tree_query_state = world.query_filtered::<&Children, With<ActionNode>>();
-        rec(root, world, &mut tree_query_state);
+        for root in root_nodes {
+            rec(root, world, &mut tree_query_state);
+        }
 
         let has_stale_nodes = world
             .query_filtered::<Entity, (With<Stale>, With<ActionNode>)>()
@@ -64,7 +67,7 @@ impl Command for ExecuteActionTree {
             .is_some();
 
         if has_stale_nodes {
-            world.commands().queue(ExecuteActionTree(root));
+            world.commands().queue(ExecuteActionTrees);
         }
     }
 }

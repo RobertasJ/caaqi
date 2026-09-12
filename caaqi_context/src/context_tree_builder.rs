@@ -1,7 +1,12 @@
 use std::marker::PhantomData;
 
 use bevy::{
-    ecs::{bundle::Bundle, entity::Entity, resource::Resource, world::World},
+    ecs::{
+        bundle::Bundle,
+        entity::Entity,
+        resource::Resource,
+        world::{DeferredWorld, World},
+    },
     log::warn,
     prelude::{Deref, DerefMut},
 };
@@ -63,7 +68,9 @@ pub fn collect_in_scope<S: ScopeKind, R>(
     (res, attached)
 }
 
-pub fn attach_node<S: ScopeKind>(world: &mut World, node: DetachedNode<S>) {
+pub fn attach_node<'a, S: ScopeKind>(world: impl Into<DeferredWorld<'a>>, node: DetachedNode<S>) {
+    let world = &mut world.into();
+
     if let Some(mut attached_nodes) = world.get_resource_mut::<AttachedNodes<S>>() {
         attached_nodes.push(*node);
     } else {
@@ -96,8 +103,8 @@ mod scope_tests {
             let entity1 = world.spawn(Num(42)).id();
             let entity2 = world.spawn(Num(43)).id();
 
-            attach_node::<TestScope>(world, DetachedNode::from_entity(entity1));
-            attach_node::<TestScope>(world, DetachedNode::from_entity(entity2));
+            attach_node::<TestScope>(&mut *world, DetachedNode::from_entity(entity1));
+            attach_node::<TestScope>(&mut *world, DetachedNode::from_entity(entity2));
         });
 
         assert_eq!(nodes.len(), 2);

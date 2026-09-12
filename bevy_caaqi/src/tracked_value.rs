@@ -4,10 +4,14 @@ use bevy::{
         component::Component,
         entity::{Entity, EntityNotSpawnedError},
         resource::Resource,
-        system::command,
-        world::{EntityRef, EntityWorldMut, Mut, World, error::EntityMutableFetchError},
+        system::{Commands, command},
+        world::{
+            self, DeferredWorld, EntityMut, EntityRef, EntityWorldMut, Mut, World,
+            error::EntityMutableFetchError,
+        },
     },
     prelude::{Deref, DerefMut},
+    state::commands,
 };
 use ouroboros::self_referencing;
 use smallvec::SmallVec;
@@ -20,7 +24,7 @@ use std::{
     sync::Arc,
 };
 
-use crate::action::context_builder::action;
+use crate::action::{context_builder::action, execute::ExecuteActionTrees};
 use caaqi_context::{DetachedNode, ScopeKind, attach_node};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -132,14 +136,15 @@ pub fn drop_ref<T: Any + Send + Sync + 'static>(world: &mut World, ref_: Ref<T>)
 
 impl<T: Any + Send + Sync + 'static> Ref<T> {
     #[track_caller]
-    pub fn set_or_init(&mut self, world: &mut World, value: T) {
+    pub fn set_or_init<'a>(&mut self, world: impl Into<DeferredWorld<'a>>, value: T) {
+        let world = &mut world.into();
         if self
             .value(world)
             .map(|v| v.0.as_deref())
             .flatten()
             .is_some()
         {
-            self.set(world, value);
+            self.set(world.reborrow(), value);
         } else {
             self.entity_mut(world)
                 .expect("the Ref has been deallocated")
@@ -150,19 +155,21 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
         }
     }
 
-    pub fn set_or_init_with_caller(
+    pub fn set_or_init_with_caller<'a>(
         &mut self,
-        world: &mut World,
+        world: impl Into<DeferredWorld<'a>>,
         value: T,
         caller: &'static Location<'static>,
     ) {
+        let world = &mut world.into();
+
         if self
             .value(world)
             .map(|v| v.0.as_deref())
             .flatten()
             .is_some()
         {
-            self.set_with_caller(world, value, caller);
+            self.set_with_caller(world.reborrow(), value, caller);
         } else {
             self.entity_mut(world)
                 .expect("the Ref has been deallocated")
@@ -174,12 +181,15 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
     }
 
     #[track_caller]
-    pub fn subscribe(&self, world: &mut World) {
-        attach_node(world, DetachedNode::<SubscribeScope>::from_entity(self.0));
+    pub fn subscribe(&self, world: &mut DeferredWorld) {
+        attach_node(
+            world.reborrow(),
+            DetachedNode::<SubscribeScope>::from_entity(self.0),
+        );
     }
 
     #[track_caller]
-    pub fn notify(&self, world: &mut World) {
+    pub fn notify(&self, world: &mut DeferredWorld) {
         world
             .get_resource_mut::<WrittenTo>()
             .unwrap()
@@ -193,7 +203,11 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
             .push(Location::caller());
     }
 
-    pub fn notify_with_caller(&self, world: &mut World, caller: &'static Location<'static>) {
+    pub fn notify_with_caller(
+        &self,
+        world: &mut DeferredWorld,
+        caller: &'static Location<'static>,
+    ) {
         world
             .get_resource_mut::<WrittenTo>()
             .unwrap()
@@ -208,13 +222,13 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
     }
 
     #[track_caller]
-    pub fn set(&mut self, world: &mut World, value: T) {
+    pub fn set<'a>(&mut self, world: impl Into<DeferredWorld<'a>>, value: T) {
         *self.write(world) = value;
     }
 
-    pub fn set_with_caller(
+    pub fn set_with_caller<'a>(
         &mut self,
-        world: &mut World,
+        world: impl Into<DeferredWorld<'a>>,
         value: T,
         caller: &'static Location<'static>,
     ) {
@@ -222,38 +236,44 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
     }
 
     #[track_caller]
-    pub fn read(&self, world: &mut World) -> ReadRef<T> {
+    pub fn read<'a>(&self, world: impl Into<DeferredWorld<'a>>) -> ReadRef<T> {
+        let world = &mut world.into();
         self.subscribe(world);
 
-        self.silent_read(world)
+        self.silent_read(world.reborrow())
     }
 
     #[track_caller]
-    fn silent_read(&self, world: &mut World) -> ReadRef<T> {
+    pub fn silent_read<'a>(&self, world: impl Into<DeferredWorld<'a>>) -> ReadRef<T> {
+        let world = &mut world.into();
+
         let ref_value = self.data(world).expect("the Ref is not initialized");
 
         self.read_ref_value(ref_value)
     }
 
     #[track_caller]
-    pub fn write(&mut self, world: &mut World) -> WriteRef<T> {
-        self.notify(world);
+    pub fn write<'a>(&mut self, world: impl Into<DeferredWorld<'a>>) -> WriteRef<T> {
+        let world = &mut world.into();
 
-        self.silent_write(world)
+        self.notify(world);
+        self.silent_write(world.reborrow())
     }
 
-    pub fn write_with_caller(
+    pub fn write_with_caller<'a>(
         &mut self,
-        world: &mut World,
+        world: impl Into<DeferredWorld<'a>>,
         caller: &'static Location<'static>,
     ) -> WriteRef<T> {
-        self.notify_with_caller(world, caller);
+        let world = &mut world.into();
 
-        self.silent_write(world)
+        self.notify_with_caller(world, caller);
+        self.silent_write(world.reborrow())
     }
 
     #[track_caller]
-    fn silent_write(&mut self, world: &mut World) -> WriteRef<T> {
+    pub fn silent_write<'a>(&mut self, world: impl Into<DeferredWorld<'a>>) -> WriteRef<T> {
+        let world = &mut world.into();
         let ref_value = self.data(world).expect("the Ref is not initialized");
 
         self.write_ref_value(ref_value)
@@ -273,7 +293,7 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
         ReadRef::new(Arc::clone(ref_value), |arc| arc.borrow(), PhantomData)
     }
 
-    fn value<'a>(&self, world: &'a mut World) -> Option<&'a RefValue> {
+    fn value<'a>(&self, world: &'a mut DeferredWorld) -> Option<&'a RefValue> {
         self.entity(world)
             .expect("the Ref has been deallocated")
             .get::<RefValue>()
@@ -281,19 +301,22 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
 
     fn data<'a>(
         &self,
-        world: &'a mut World,
+        world: &'a mut DeferredWorld,
     ) -> Option<&'a Arc<AtomicRefCell<Box<dyn Any + Send + Sync + 'static>>>> {
         self.value(world).and_then(|ref_value| ref_value.0.as_ref())
     }
 
-    fn entity<'a>(&self, world: &'a mut World) -> Result<EntityRef<'a>, EntityNotSpawnedError> {
+    fn entity<'a>(
+        &self,
+        world: &'a mut DeferredWorld,
+    ) -> Result<EntityRef<'a>, EntityNotSpawnedError> {
         world.get_entity(self.0)
     }
 
     fn entity_mut<'a>(
         &self,
-        world: &'a mut World,
-    ) -> Result<EntityWorldMut<'a>, EntityMutableFetchError> {
+        world: &'a mut DeferredWorld,
+    ) -> Result<EntityMut<'a>, EntityMutableFetchError> {
         world.get_entity_mut(self.0)
     }
 
