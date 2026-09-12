@@ -7,6 +7,7 @@ use bevy::{
         system::Commands,
         world::{self, World},
     },
+    log::debug,
     platform::collections::HashMap,
 };
 use caaqi_context::{DetachedNode, ScopeKind, attach_node, collect_in_scope};
@@ -91,7 +92,6 @@ pub fn run_action_node(world: &mut World, node: Entity) {
         world.entity_mut(*affected).insert(Stale);
     }
 
-    #[cfg(feature = "debug")]
     for (ref_, write_locations) in world
         .get_resource_mut::<WriteLocations>()
         .unwrap()
@@ -102,14 +102,15 @@ pub fn run_action_node(world: &mut World, node: Entity) {
             .get::<RefInitLocation>(ref_)
             .expect("the Ref has been deallocated");
 
-        println!(
-            "[execute_action_tree] Ref at location {} was written to at locations:",
+        debug!(
+            "[execute_action_tree] Ref at location {} was written to at locations:\n{}",
             *ref_location,
+            write_locations
+                .iter()
+                .map(|l| format!("\t{}", l))
+                .collect::<Vec<_>>()
+                .join("\n")
         );
-
-        for write_location in write_locations {
-            println!("\t{}", *write_location);
-        }
     }
 }
 
