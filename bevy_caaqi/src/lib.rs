@@ -2,15 +2,12 @@ pub mod action;
 pub mod tracked_value;
 
 use bevy::prelude::*;
+use caaqi_context::Attached;
 
 use crate::{
-    action::context_builder::ActionScope,
-    tracked_value::{WriteLocations, WrittenTo},
+    action::context_builder::ActionEntity,
+    tracked_value::{RefRead, RefTypeErased, WriteLocations, WrittenTo},
 };
-pub use caaqi_context::DetachedNode;
-
-#[derive(Debug, Component)]
-pub struct CaaqiActionRoot(pub DetachedNode<ActionScope>);
 
 /// SystemSet for Caaqi UI layout and rendering operations.
 ///
@@ -33,6 +30,8 @@ pub struct CaaqiPlugin;
 impl Plugin for CaaqiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WrittenTo>()
-            .init_resource::<WriteLocations>();
+            .init_resource::<WriteLocations>()
+            .init_resource::<Attached<ActionEntity>>()
+            .init_resource::<Attached<RefRead>>();
     }
 }

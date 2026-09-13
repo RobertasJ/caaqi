@@ -10,12 +10,14 @@ use bevy::{
     ui::DefaultUiCamera,
 };
 
+use crate::tracked_value::RefTypeErased;
+
 #[derive(Component)]
 #[require(Deps)]
 pub struct ActionNode(pub Box<dyn FnMut(&mut World) + Send + Sync + 'static>);
 
 #[derive(Component, Debug, Default, Deref, DerefMut)]
-pub struct Deps(pub HashSet<Entity>);
+pub struct Deps(pub HashSet<RefTypeErased>);
 
 #[derive(Component, Debug, Default)]
 pub struct Stale;
@@ -26,8 +28,8 @@ pub struct ActionLocation(pub &'static std::panic::Location<'static>);
 #[derive(Component)]
 pub struct ActionRewind(pub Box<dyn FnOnce(&mut World) + Send + Sync + 'static>);
 
-#[derive(Component, Debug, Default)]
-pub struct SyncKeys(pub Vec<SyncKey>);
+// #[derive(Component, Debug, Default)]
+// pub struct SyncKeys(pub Vec<SyncKey>);
 
-#[derive(Component, Debug, Deref, PartialEq, Eq)]
-pub struct SyncKey(Entity);
+// #[derive(Debug, Deref, PartialEq, Eq)]
+// pub struct SyncKey(Entity);

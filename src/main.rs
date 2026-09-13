@@ -100,11 +100,11 @@ impl NodeMutator {
             is_hovered,
         };
 
-        self_.observe(world, move |ev: On<Pointer<Over>>, mut world| {
+        self_.observe(world, move |ev: On<Pointer<Enter>>, mut world| {
             is_hovered.set(world, true);
         });
 
-        self_.observe(world, move |ev: On<Pointer<Out>>, mut world| {
+        self_.observe(world, move |ev: On<Pointer<Leave>>, mut world| {
             is_hovered.set(world, false);
         });
 

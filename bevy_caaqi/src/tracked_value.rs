@@ -13,6 +13,7 @@ use bevy::{
     prelude::{Deref, DerefMut},
     state::commands,
 };
+use caaqi_context::Attached;
 use ouroboros::self_referencing;
 use smallvec::SmallVec;
 use std::{
@@ -28,12 +29,6 @@ use crate::action::{
     context_builder::{action, rewind},
     execute::ExecuteActionTrees,
 };
-use caaqi_context::{DetachedNode, ScopeKind, attach_node};
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct SubscribeScope;
-
-impl ScopeKind for SubscribeScope {}
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Ref<T: Send + Sync + 'static>(Entity, std::marker::PhantomData<T>);
@@ -46,7 +41,7 @@ impl<T: Send + Sync + 'static> Clone for Ref<T> {
 
 impl<T: Send + Sync + 'static> Copy for Ref<T> {}
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Deref, DerefMut)]
 pub struct RefTypeErased(Entity);
 
 #[derive(Component)]
@@ -56,10 +51,15 @@ pub struct RefValue(Option<Arc<AtomicRefCell<Box<dyn Any + Send + Sync + 'static
 pub struct RefInitLocation(&'static Location<'static>);
 
 #[derive(Debug, Default, Clone, Resource, Deref, DerefMut)]
-pub struct WrittenTo(HashSet<Entity>);
+pub struct WrittenTo(HashSet<RefTypeErased>);
 
 #[derive(Debug, Default, Clone, Resource, Deref, DerefMut)]
 pub struct WriteLocations(HashMap<Entity, Vec<&'static std::panic::Location<'static>>>);
+
+pub struct RefRead(
+    pub RefTypeErased,
+    pub &'static std::panic::Location<'static>,
+);
 
 impl RefValue {
     fn new<T: Any + Send + Sync + 'static>(value: T) -> Self {
@@ -185,7 +185,7 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
 
     #[track_caller]
     pub fn subscribe<'a>(&self, world: impl Into<DeferredWorld<'a>>) {
-        attach_node(world, DetachedNode::<SubscribeScope>::from_entity(self.0));
+        Attached::attach(world, RefRead(self.into_erased(), Location::caller()));
     }
 
     #[track_caller]
@@ -194,7 +194,7 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
         world
             .get_resource_mut::<WrittenTo>()
             .unwrap()
-            .insert(self.0);
+            .insert(self.into_erased());
 
         world
             .get_resource_mut::<WriteLocations>()
@@ -212,7 +212,7 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
         world
             .get_resource_mut::<WrittenTo>()
             .unwrap()
-            .insert(self.0);
+            .insert(self.into_erased());
 
         world
             .get_resource_mut::<WriteLocations>()

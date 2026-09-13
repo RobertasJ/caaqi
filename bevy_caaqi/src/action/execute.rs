@@ -2,10 +2,10 @@ use std::{collections::HashSet, ops::Deref};
 
 use crate::{
     action::{
-        context_builder::ActionScope,
+        context_builder::ActionEntity,
         node::{ActionLocation, ActionRewind, Deps, Stale},
     },
-    tracked_value::{RefInitLocation, RefTypeErased, SubscribeScope, WriteLocations, WrittenTo},
+    tracked_value::{RefInitLocation, RefRead, RefTypeErased, WriteLocations, WrittenTo},
 };
 use bevy::{
     ecs::{
@@ -20,7 +20,7 @@ use bevy::{
     platform::collections::HashMap,
     prelude::{Deref, DerefMut},
 };
-use caaqi_context::collect_in_scope;
+use caaqi_context::Scope;
 
 use crate::action::node::{self, ActionNode};
 
@@ -42,7 +42,9 @@ impl Command for ExecuteActionTrees {
         ) {
             if world.get::<Stale>(node).is_some() && world.get::<ActionNode>(node).is_some() {
                 world.entity_mut(node).remove::<Stale>();
+                run_rewinds(world, node);
                 run_action_node(world, node);
+                flush_tracked_writes(world);
             } else {
                 let children = tree_query_state
                     .query(world)
@@ -83,7 +85,7 @@ impl Command for FlushWrites {
     }
 }
 
-pub fn run_action_node(world: &mut World, node: Entity) {
+fn run_rewinds(world: &mut World, node: Entity) {
     let mut rewinds = world.query_filtered::<(
         Entity,
         Option<&Children>,
@@ -123,7 +125,9 @@ pub fn run_action_node(world: &mut World, node: Entity) {
         let action_rewind = entity_mut.take::<ActionRewind>().unwrap();
         (action_rewind.0)(world);
     }
+}
 
+pub fn run_action_node(world: &mut World, node: Entity) {
     let mut entity_mut = world.entity_mut(node);
     entity_mut.despawn_children();
 
@@ -133,21 +137,40 @@ pub fn run_action_node(world: &mut World, node: Entity) {
         panic!("entity {:?} is not an ActionNode", node);
     };
 
-    let (action_result, depends_on) = collect_in_scope::<SubscribeScope, _>(world, |world| {
-        collect_in_scope::<ActionScope, _>(world, |world| {
-            (action_node.0)(world);
-        })
-    });
+    let dependencies_scope = Scope::<RefRead>::new(&mut *world);
+    let action_entities_scope = Scope::<ActionEntity>::new(&mut *world);
 
-    let (_, sub_actions_or_rewinds) = action_result;
+    (action_node.0)(world);
+
+    let sub_actions_or_rewinds = action_entities_scope.collect(&mut *world);
+    let depends_on = dependencies_scope.collect(&mut *world);
+
+    debug!(
+        "[execute_action_tree] Node {:?} at {} depends on {} Refs at:\n{}\n and has {} sub-actions or rewinds.",
+        node,
+        world
+            .get::<ActionLocation>(node)
+            .map(|l| l.to_string())
+            .unwrap_or("Not Given".to_string()),
+        depends_on.len(),
+        depends_on
+            .iter()
+            .map(|r| format!("\t{}", r.1.to_string()))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        depends_on.len(),
+    );
 
     let mut entity_mut = world.entity_mut(node);
     entity_mut.insert(action_node);
-    entity_mut.add_children(&sub_actions_or_rewinds);
+    entity_mut.add_children(
+        &sub_actions_or_rewinds
+            .into_iter()
+            .map(|ae| *ae)
+            .collect::<Vec<_>>(),
+    );
 
-    entity_mut.insert(Deps(depends_on.into_iter().collect()));
-
-    flush_tracked_writes(world);
+    entity_mut.insert(Deps(depends_on.into_iter().map(|r| r.0).collect()));
 }
 
 pub fn flush_tracked_writes(world: &mut World) {
@@ -156,6 +179,11 @@ pub fn flush_tracked_writes(world: &mut World) {
         .unwrap()
         .drain()
         .collect::<HashSet<_>>();
+
+    debug!(
+        "[execute_action_tree] Flushing tracked writes. Tracked writes to {} Refs.",
+        written_to.len()
+    );
 
     let mut affected_nodes = vec![];
     let mut action_nodes =
@@ -168,6 +196,16 @@ pub fn flush_tracked_writes(world: &mut World) {
             affected_nodes.push((node, location.0));
         }
     }
+
+    debug!(
+        "[execute_action_tree] Found {} affected nodes:\n{}",
+        affected_nodes.len(),
+        affected_nodes
+            .iter()
+            .map(|(node, location)| format!("\tNode {:?} at {}", node, location))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
 
     for (affected, location) in &affected_nodes {
         world.entity_mut(*affected).insert(Stale);

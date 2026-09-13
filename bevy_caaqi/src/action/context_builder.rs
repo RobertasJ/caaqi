@@ -10,55 +10,40 @@ use bevy::{
     },
     log::debug,
     platform::collections::HashMap,
+    prelude::{Deref, DerefMut},
 };
-use caaqi_context::{DetachedNode, ScopeKind, attach_node, collect_in_scope};
+use caaqi_context::Attached;
 
 use crate::{
     action::{
         execute::{ExecuteActionTrees, run_action_node},
-        node::{ActionLocation, ActionNode, ActionRewind, Deps, Stale, SyncKey, SyncKeys},
+        node::{ActionLocation, ActionNode, ActionRewind, Deps, Stale},
     },
-    tracked_value::{RefInitLocation, RefValue, SubscribeScope, WriteLocations, WrittenTo},
+    tracked_value::{RefInitLocation, RefValue, WriteLocations, WrittenTo},
 };
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ActionScope;
-
-impl ScopeKind for ActionScope {}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deref, DerefMut)]
+pub struct ActionEntity(Entity);
 
 #[track_caller]
 pub fn detached_action(
     world: &mut World,
-    sync_keys: impl IntoIterator<Item = SyncKey>,
     action: impl FnMut(&mut World) + Send + Sync + 'static,
-) -> DetachedNode<ActionScope> {
-    DetachedNode::from_entity(
+) -> ActionEntity {
+    ActionEntity(
         world
             .spawn((
                 ActionNode(Box::new(action)),
                 ActionLocation(Location::caller()),
-                SyncKeys(sync_keys.into_iter().collect()),
             ))
             .id(),
     )
-    .into()
 }
 
 #[track_caller]
 pub fn action(world: &mut World, action: impl FnMut(&mut World) + Send + Sync + 'static) {
-    let node = detached_action(world, [], action);
-    attach_node::<ActionScope>(&mut *world, node);
-    run_action_node(world, *node);
-}
-
-#[track_caller]
-pub fn synced_action(
-    world: &mut World,
-    sync_keys: impl IntoIterator<Item = SyncKey>,
-    action: impl FnMut(&mut World) + Send + Sync + 'static,
-) {
-    let node = detached_action(world, sync_keys, action);
-    attach_node::<ActionScope>(&mut *world, node);
+    let node = detached_action(world, action);
+    Attached::attach(&mut *world, node);
     run_action_node(world, *node);
 }
 
@@ -74,6 +59,8 @@ pub fn defer_action_eval(
 }
 
 pub fn rewind(world: &mut World, undo: impl FnOnce(&mut World) + Send + Sync + 'static) {
-    let node = DetachedNode::from_entity(world.spawn(ActionRewind(Box::new(undo))).id());
-    attach_node::<ActionScope>(&mut *world, node);
+    let node = ActionEntity(world.spawn(ActionRewind(Box::new(undo))).id());
+    Attached::attach(&mut *world, node);
 }
+
+// pub fn sync_node(world: &mut World, node: SyncKey) {}
