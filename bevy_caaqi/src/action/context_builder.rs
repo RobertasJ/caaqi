@@ -13,11 +13,13 @@ use bevy::{
     prelude::{Deref, DerefMut},
 };
 use caaqi_context::Attached;
+use smallvec::SmallVec;
 
 use crate::{
     action::{
         execute::{ExecuteActionTrees, run_action_node},
         node::{ActionLocation, ActionNode, ActionRewind, Deps, Stale},
+        sync::SyncKey,
     },
     tracked_value::{RefInitLocation, RefValue},
 };
@@ -59,8 +61,18 @@ pub fn defer_action_eval(
 }
 
 pub fn rewind(world: &mut World, undo: impl FnOnce(&mut World) + Send + Sync + 'static) {
-    let node = ActionEntity(world.spawn(ActionRewind(Box::new(undo))).id());
-    Attached::attach(&mut *world, node);
+    synced_rewind(world, std::iter::empty(), undo);
 }
 
-// pub fn sync_node(world: &mut World, node: SyncKey) {}
+pub fn synced_rewind(
+    world: &mut World,
+    keys: impl IntoIterator<Item = SyncKey>,
+    undo: impl FnOnce(&mut World) + Send + Sync + 'static,
+) {
+    let node = ActionEntity(
+        world
+            .spawn(ActionRewind::new(undo, keys.into_iter().collect()))
+            .id(),
+    );
+    Attached::attach(&mut *world, node);
+}

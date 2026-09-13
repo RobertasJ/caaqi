@@ -3,7 +3,7 @@ use std::{collections::HashSet, ops::Deref};
 use crate::{
     action::{
         context_builder::ActionEntity,
-        node::{ActionLocation, ActionRewind, Deps, Stale},
+        node::{ActionLocation, ActionRewind, Deps, Stale, TreeNode},
     },
     tracked_value::{RefInitLocation, RefNotify, RefSubscribe, RefTypeErased},
 };
@@ -35,7 +35,7 @@ impl Command for ExecuteActionTrees {
             .iter(world)
             .collect::<Vec<_>>();
 
-        fn rec(
+        fn traverse_tree(
             node: Entity,
             world: &mut World,
             tree_query_state: &mut QueryState<&Children, With<ActionNode>>,
@@ -52,14 +52,14 @@ impl Command for ExecuteActionTrees {
                     .unwrap_or_default();
 
                 for child in children {
-                    rec(child, world, tree_query_state);
+                    traverse_tree(child, world, tree_query_state);
                 }
             }
         }
 
         let mut tree_query_state = world.query_filtered::<&Children, With<ActionNode>>();
         for root in root_nodes {
-            rec(root, world, &mut tree_query_state);
+            traverse_tree(root, world, &mut tree_query_state);
         }
 
         let has_stale_nodes = world
@@ -85,29 +85,23 @@ impl Command for FlushWrites {
 }
 
 fn rewind_action(world: &mut World, node: Entity) {
-    let mut rewinds = world.query_filtered::<(
-        Entity,
-        Option<&Children>,
-        Has<ActionRewind>,
-    ), Or<(With<ActionRewind>, With<ActionNode>)>>();
+    let mut rewinds =
+        world.query_filtered::<(Entity, Option<&Children>, Has<ActionRewind>), With<TreeNode>>();
     let rewinds = rewinds.query(world);
 
-    let mut rewinds_to_run = vec![];
+    let mut rewinds_to_run = HashSet::<Entity>::new();
 
     fn rec(
         node: Entity,
-        rewinds: &Query<
-            (Entity, Option<&Children>, Has<ActionRewind>),
-            Or<(With<ActionRewind>, With<ActionNode>)>,
-        >,
-        rewinds_to_run: &mut Vec<Entity>,
+        rewinds: &Query<(Entity, Option<&Children>, Has<ActionRewind>), With<TreeNode>>,
+        rewinds_to_run: &mut HashSet<Entity>,
     ) {
         let (_, node_children, _) = rewinds.get(node).unwrap();
         if let Some(children) = node_children {
             for child in children {
                 let (child_entity, _, has_rewind) = rewinds.get(*child).unwrap();
                 if has_rewind {
-                    rewinds_to_run.push(child_entity);
+                    rewinds_to_run.insert(child_entity);
                 } else {
                     rec(child_entity, rewinds, rewinds_to_run);
                 }
@@ -116,21 +110,6 @@ fn rewind_action(world: &mut World, node: Entity) {
     }
 
     rec(node, &rewinds, &mut rewinds_to_run);
-
-    rewinds_to_run.reverse();
-
-    for rewind in rewinds_to_run {
-        let mut entity_mut = world.entity_mut(rewind);
-        let action_rewind = entity_mut.take::<ActionRewind>().unwrap();
-
-        let reads_scope = Scope::<RefSubscribe>::new(&mut *world);
-        let writes_scope = Scope::<RefNotify>::new(&mut *world);
-
-        (action_rewind.0)(world);
-
-        let _ = reads_scope.collect(&mut *world);
-        let _ = writes_scope.collect(&mut *world);
-    }
 
     let mut entity_mut = world.entity_mut(node);
     entity_mut.despawn_children();

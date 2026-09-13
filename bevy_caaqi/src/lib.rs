@@ -5,7 +5,7 @@ use bevy::prelude::*;
 use caaqi_context::Attached;
 
 use crate::{
-    action::context_builder::ActionEntity,
+    action::{context_builder::ActionEntity, sync::SyncKeyToRewinds},
     tracked_value::{RefNotify, RefSubscribe, RefTypeErased},
 };
 
@@ -31,6 +31,7 @@ impl Plugin for CaaqiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Attached<ActionEntity>>()
             .init_resource::<Attached<RefSubscribe>>()
-            .init_resource::<Attached<RefNotify>>();
+            .init_resource::<Attached<RefNotify>>()
+            .init_resource::<SyncKeyToRewinds>();
     }
 }
