@@ -4,6 +4,9 @@ hotpatch:
 run:
    cargo run
 
+run-example example:
+   cargo run --example {{example}}
+
 [default]
 debug:
    cargo run --features debug

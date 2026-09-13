@@ -3,10 +3,10 @@ use bevy::{ecs::world::DeferredWorld, prelude::*};
 use bevy_caaqi::{
     CaaqiPlugin,
     action::{
-        context_builder::{action, defer_action_eval, detached_action, rewind},
+        context_builder::{action, defer_action_eval, rewind},
         execute::{ExecuteActionTrees, FlushWrites},
     },
-    tracked_value::{Ref, ref_, ref_action, ref_uninit},
+    tracked_value::{Ref, ref_},
 };
 
 fn main() {
@@ -22,7 +22,7 @@ fn setup_ui(mut commands: Commands) {
     defer_action_eval(commands.reborrow(), |world| {
         let mut root_node = NodeMutator::new(world);
 
-        root_node.observe(world, move |ev: On<Pointer<Click>>, mut world| {
+        root_node.observe(world, move |_ev: On<Pointer<Click>>, _world| {
             println!("Root node clicked!");
         });
 
@@ -100,11 +100,11 @@ impl NodeMutator {
             is_hovered,
         };
 
-        self_.observe(world, move |ev: On<Pointer<Enter>>, mut world| {
+        self_.observe(world, move |_ev: On<Pointer<Enter>>, world| {
             is_hovered.set(world, true);
         });
 
-        self_.observe(world, move |ev: On<Pointer<Leave>>, mut world| {
+        self_.observe(world, move |_ev: On<Pointer<Leave>>, world| {
             is_hovered.set(world, false);
         });
 
@@ -118,15 +118,6 @@ impl NodeMutator {
             .get_mut::<BackgroundColor>()
             .unwrap()
             .0 = color;
-    }
-
-    fn get_color<'a>(&self, world: impl Into<DeferredWorld<'a>>) -> Color {
-        world
-            .into()
-            .entity_mut(self.node_entity)
-            .get::<BackgroundColor>()
-            .unwrap()
-            .0
     }
 
     fn set_width(&mut self, world: &mut World, width: f32) {
@@ -168,9 +159,5 @@ impl NodeMutator {
                 world.commands().queue(FlushWrites);
                 world.commands().queue(ExecuteActionTrees);
             });
-    }
-
-    fn children(&self, world: &mut World) -> Vec<NodeMutator> {
-        self.children.read(world).clone()
     }
 }
