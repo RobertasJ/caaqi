@@ -5,7 +5,7 @@ use crate::{
         context_builder::ActionEntity,
         node::{ActionLocation, ActionRewind, Deps, Stale},
     },
-    tracked_value::{RefInitLocation, RefSubscribe, RefTypeErased, RefWrite},
+    tracked_value::{RefInitLocation, RefNotify, RefSubscribe, RefTypeErased},
 };
 use bevy::{
     ecs::{
@@ -42,9 +42,8 @@ impl Command for ExecuteActionTrees {
         ) {
             if world.get::<Stale>(node).is_some() && world.get::<ActionNode>(node).is_some() {
                 world.entity_mut(node).remove::<Stale>();
-                run_rewinds(world, node);
+                rewind_action(world, node);
                 run_action_node(world, node);
-                flush_tracked_writes(world);
             } else {
                 let children = tree_query_state
                     .query(world)
@@ -85,7 +84,7 @@ impl Command for FlushWrites {
     }
 }
 
-fn run_rewinds(world: &mut World, node: Entity) {
+fn rewind_action(world: &mut World, node: Entity) {
     let mut rewinds = world.query_filtered::<(
         Entity,
         Option<&Children>,
@@ -125,19 +124,19 @@ fn run_rewinds(world: &mut World, node: Entity) {
         let action_rewind = entity_mut.take::<ActionRewind>().unwrap();
 
         let reads_scope = Scope::<RefSubscribe>::new(&mut *world);
-        let writes_scope = Scope::<RefWrite>::new(&mut *world);
+        let writes_scope = Scope::<RefNotify>::new(&mut *world);
 
         (action_rewind.0)(world);
 
         let _ = reads_scope.collect(&mut *world);
         let _ = writes_scope.collect(&mut *world);
     }
+
+    let mut entity_mut = world.entity_mut(node);
+    entity_mut.despawn_children();
 }
 
 pub fn run_action_node(world: &mut World, node: Entity) {
-    let mut entity_mut = world.entity_mut(node);
-    entity_mut.despawn_children();
-
     let mut action_node = if let Some(action_node) = world.entity_mut(node).take::<ActionNode>() {
         action_node
     } else {
@@ -178,10 +177,12 @@ pub fn run_action_node(world: &mut World, node: Entity) {
     );
 
     entity_mut.insert(Deps(depends_on.into_iter().map(|r| r.ref_).collect()));
+
+    flush_tracked_writes(world);
 }
 
 pub fn flush_tracked_writes(world: &mut World) {
-    let writes = Attached::<RefWrite>::take(&mut *world);
+    let writes = Attached::<RefNotify>::take(&mut *world);
 
     let written_to = writes.iter().map(|rw| rw.ref_).collect::<HashSet<_>>();
 
@@ -216,7 +217,7 @@ pub fn flush_tracked_writes(world: &mut World) {
         world.entity_mut(*affected).insert(Stale);
     }
 
-    for RefWrite { ref_, location } in writes {
+    for RefNotify { ref_, location } in writes {
         let ref_location = *world
             .get::<RefInitLocation>(*ref_)
             .expect("the Ref has been deallocated");

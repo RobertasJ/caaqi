@@ -6,7 +6,7 @@ use caaqi_context::Attached;
 
 use crate::{
     action::context_builder::ActionEntity,
-    tracked_value::{RefSubscribe, RefTypeErased, RefWrite},
+    tracked_value::{RefNotify, RefSubscribe, RefTypeErased},
 };
 
 /// SystemSet for Caaqi UI layout and rendering operations.
@@ -31,6 +31,6 @@ impl Plugin for CaaqiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Attached<ActionEntity>>()
             .init_resource::<Attached<RefSubscribe>>()
-            .init_resource::<Attached<RefWrite>>();
+            .init_resource::<Attached<RefNotify>>();
     }
 }

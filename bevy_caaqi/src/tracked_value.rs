@@ -55,7 +55,7 @@ pub struct RefSubscribe {
     pub location: &'static std::panic::Location<'static>,
 }
 
-pub struct RefWrite {
+pub struct RefNotify {
     pub ref_: RefTypeErased,
     pub location: &'static std::panic::Location<'static>,
 }
@@ -199,7 +199,7 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
 
         Attached::attach(
             world.reborrow(),
-            RefWrite {
+            RefNotify {
                 ref_: self.into_erased(),
                 location: Location::caller(),
             },
@@ -213,7 +213,7 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
     ) {
         Attached::attach(
             world.reborrow(),
-            RefWrite {
+            RefNotify {
                 ref_: self.into_erased(),
                 location: caller,
             },
