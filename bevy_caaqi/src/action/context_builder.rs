@@ -19,7 +19,7 @@ use crate::{
         execute::{ExecuteActionTrees, run_action_node},
         node::{ActionLocation, ActionNode, ActionRewind, Deps, Stale},
     },
-    tracked_value::{RefInitLocation, RefValue, WriteLocations, WrittenTo},
+    tracked_value::{RefInitLocation, RefValue},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deref, DerefMut)]

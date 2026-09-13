@@ -50,16 +50,15 @@ pub struct RefValue(Option<Arc<AtomicRefCell<Box<dyn Any + Send + Sync + 'static
 #[derive(Component, Clone, Copy, Deref, DerefMut)]
 pub struct RefInitLocation(&'static Location<'static>);
 
-#[derive(Debug, Default, Clone, Resource, Deref, DerefMut)]
-pub struct WrittenTo(HashSet<RefTypeErased>);
+pub struct RefSubscribe {
+    pub ref_: RefTypeErased,
+    pub location: &'static std::panic::Location<'static>,
+}
 
-#[derive(Debug, Default, Clone, Resource, Deref, DerefMut)]
-pub struct WriteLocations(HashMap<Entity, Vec<&'static std::panic::Location<'static>>>);
-
-pub struct RefRead(
-    pub RefTypeErased,
-    pub &'static std::panic::Location<'static>,
-);
+pub struct RefWrite {
+    pub ref_: RefTypeErased,
+    pub location: &'static std::panic::Location<'static>,
+}
 
 impl RefValue {
     fn new<T: Any + Send + Sync + 'static>(value: T) -> Self {
@@ -185,23 +184,26 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
 
     #[track_caller]
     pub fn subscribe<'a>(&self, world: impl Into<DeferredWorld<'a>>) {
-        Attached::attach(world, RefRead(self.into_erased(), Location::caller()));
+        Attached::attach(
+            world,
+            RefSubscribe {
+                ref_: self.into_erased(),
+                location: Location::caller(),
+            },
+        );
     }
 
     #[track_caller]
     pub fn notify<'a>(&self, world: impl Into<DeferredWorld<'a>>) {
         let world = &mut world.into();
-        world
-            .get_resource_mut::<WrittenTo>()
-            .unwrap()
-            .insert(self.into_erased());
 
-        world
-            .get_resource_mut::<WriteLocations>()
-            .unwrap()
-            .entry(self.0)
-            .or_default()
-            .push(Location::caller());
+        Attached::attach(
+            world.reborrow(),
+            RefWrite {
+                ref_: self.into_erased(),
+                location: Location::caller(),
+            },
+        );
     }
 
     pub fn notify_with_caller(
@@ -209,17 +211,13 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
         world: &mut DeferredWorld,
         caller: &'static Location<'static>,
     ) {
-        world
-            .get_resource_mut::<WrittenTo>()
-            .unwrap()
-            .insert(self.into_erased());
-
-        world
-            .get_resource_mut::<WriteLocations>()
-            .unwrap()
-            .entry(self.0)
-            .or_default()
-            .push(caller);
+        Attached::attach(
+            world.reborrow(),
+            RefWrite {
+                ref_: self.into_erased(),
+                location: caller,
+            },
+        );
     }
 
     #[track_caller]

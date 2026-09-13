@@ -30,7 +30,22 @@ impl<T: Send + Sync + 'static> Attached<T> {
             attached_nodes.push(node);
         } else {
             panic!(
-                "No scope for node exists. Did you init Attached<{}> in the world before calling attach?",
+                "No scope for node exists. Did you init Attached<{}> in the world before calling Attached::<{}>::attach?",
+                std::any::type_name::<T>(),
+                std::any::type_name::<T>()
+            );
+        }
+    }
+
+    pub fn take<'a>(world: impl Into<DeferredWorld<'a>>) -> SmallVec<[T; 1]> {
+        let world = &mut world.into();
+
+        if let Some(mut attached_nodes) = world.get_resource_mut::<Attached<T>>() {
+            std::mem::take(&mut *attached_nodes)
+        } else {
+            panic!(
+                "No scope for node exists. Did you init Attached<{}> in the world before calling Attached::<{}>::take?",
+                std::any::type_name::<T>(),
                 std::any::type_name::<T>()
             );
         }

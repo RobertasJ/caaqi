@@ -5,7 +5,7 @@ use crate::{
         context_builder::ActionEntity,
         node::{ActionLocation, ActionRewind, Deps, Stale},
     },
-    tracked_value::{RefInitLocation, RefRead, RefTypeErased, WriteLocations, WrittenTo},
+    tracked_value::{RefInitLocation, RefSubscribe, RefTypeErased, RefWrite},
 };
 use bevy::{
     ecs::{
@@ -20,7 +20,7 @@ use bevy::{
     platform::collections::HashMap,
     prelude::{Deref, DerefMut},
 };
-use caaqi_context::Scope;
+use caaqi_context::{Attached, Scope};
 
 use crate::action::node::{self, ActionNode};
 
@@ -123,7 +123,14 @@ fn run_rewinds(world: &mut World, node: Entity) {
     for rewind in rewinds_to_run {
         let mut entity_mut = world.entity_mut(rewind);
         let action_rewind = entity_mut.take::<ActionRewind>().unwrap();
+
+        let reads_scope = Scope::<RefSubscribe>::new(&mut *world);
+        let writes_scope = Scope::<RefWrite>::new(&mut *world);
+
         (action_rewind.0)(world);
+
+        let _ = reads_scope.collect(&mut *world);
+        let _ = writes_scope.collect(&mut *world);
     }
 }
 
@@ -137,7 +144,7 @@ pub fn run_action_node(world: &mut World, node: Entity) {
         panic!("entity {:?} is not an ActionNode", node);
     };
 
-    let dependencies_scope = Scope::<RefRead>::new(&mut *world);
+    let dependencies_scope = Scope::<RefSubscribe>::new(&mut *world);
     let action_entities_scope = Scope::<ActionEntity>::new(&mut *world);
 
     (action_node.0)(world);
@@ -155,7 +162,7 @@ pub fn run_action_node(world: &mut World, node: Entity) {
         depends_on.len(),
         depends_on
             .iter()
-            .map(|r| format!("\t{}", r.1.to_string()))
+            .map(|r| format!("\t{}", r.location.to_string()))
             .collect::<Vec<_>>()
             .join("\n"),
         depends_on.len(),
@@ -170,15 +177,13 @@ pub fn run_action_node(world: &mut World, node: Entity) {
             .collect::<Vec<_>>(),
     );
 
-    entity_mut.insert(Deps(depends_on.into_iter().map(|r| r.0).collect()));
+    entity_mut.insert(Deps(depends_on.into_iter().map(|r| r.ref_).collect()));
 }
 
 pub fn flush_tracked_writes(world: &mut World) {
-    let written_to = world
-        .get_resource_mut::<WrittenTo>()
-        .unwrap()
-        .drain()
-        .collect::<HashSet<_>>();
+    let writes = Attached::<RefWrite>::take(&mut *world);
+
+    let written_to = writes.iter().map(|rw| rw.ref_).collect::<HashSet<_>>();
 
     debug!(
         "[execute_action_tree] Flushing tracked writes. Tracked writes to {} Refs.",
@@ -211,24 +216,14 @@ pub fn flush_tracked_writes(world: &mut World) {
         world.entity_mut(*affected).insert(Stale);
     }
 
-    for (ref_, write_locations) in world
-        .get_resource_mut::<WriteLocations>()
-        .unwrap()
-        .drain()
-        .collect::<HashMap<_, Vec<_>>>()
-    {
+    for RefWrite { ref_, location } in writes {
         let ref_location = *world
-            .get::<RefInitLocation>(ref_)
+            .get::<RefInitLocation>(*ref_)
             .expect("the Ref has been deallocated");
 
         debug!(
-            "[execute_action_tree] Ref at location {} was written to at locations:\n{}",
-            *ref_location,
-            write_locations
-                .iter()
-                .map(|l| format!("\t{}", l))
-                .collect::<Vec<_>>()
-                .join("\n")
+            "[execute_action_tree] Ref at location {} was written to at {}",
+            *ref_location, location
         );
     }
 }
