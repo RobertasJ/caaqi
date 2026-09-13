@@ -25,3 +25,9 @@ pub struct ActionLocation(pub &'static std::panic::Location<'static>);
 
 #[derive(Component)]
 pub struct ActionRewind(pub Box<dyn FnOnce(&mut World) + Send + Sync + 'static>);
+
+#[derive(Component, Debug, Default)]
+pub struct SyncKeys(pub Vec<SyncKey>);
+
+#[derive(Component, Debug, Deref, PartialEq, Eq)]
+pub struct SyncKey(Entity);

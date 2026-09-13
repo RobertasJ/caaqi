@@ -3,7 +3,7 @@ use bevy::{ecs::world::DeferredWorld, prelude::*};
 use bevy_caaqi::{
     CaaqiPlugin,
     action::{
-        context_builder::{action, action_root, defer_action_eval, detached_action, rewind},
+        context_builder::{action, defer_action_eval, detached_action, rewind},
         execute::{ExecuteActionTrees, FlushWrites},
     },
     tracked_value::{Ref, ref_, ref_action, ref_uninit},

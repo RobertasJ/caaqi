@@ -2,10 +2,10 @@ use std::{collections::HashSet, ops::Deref};
 
 use crate::{
     action::{
-        context_builder::{ActionScope, flush_tracked_writes},
+        context_builder::ActionScope,
         node::{ActionLocation, ActionRewind, Deps, Stale},
     },
-    tracked_value::{RefInitLocation, RefTypeErased, SubscribeScope},
+    tracked_value::{RefInitLocation, RefTypeErased, SubscribeScope, WriteLocations, WrittenTo},
 };
 use bevy::{
     ecs::{
@@ -16,6 +16,7 @@ use bevy::{
         system::{Command, Query},
         world::{EntityMut, EntityWorldMut, World},
     },
+    log::debug,
     platform::collections::HashMap,
     prelude::{Deref, DerefMut},
 };
@@ -147,4 +148,49 @@ pub fn run_action_node(world: &mut World, node: Entity) {
     entity_mut.insert(Deps(depends_on.into_iter().collect()));
 
     flush_tracked_writes(world);
+}
+
+pub fn flush_tracked_writes(world: &mut World) {
+    let written_to = world
+        .get_resource_mut::<WrittenTo>()
+        .unwrap()
+        .drain()
+        .collect::<HashSet<_>>();
+
+    let mut affected_nodes = vec![];
+    let mut action_nodes =
+        world.query_filtered::<(Entity, &Deps, &ActionLocation), With<ActionNode>>();
+
+    for (node, deps, location) in action_nodes.iter_mut(world) {
+        let affected = !deps.is_disjoint(&written_to);
+
+        if affected {
+            affected_nodes.push((node, location.0));
+        }
+    }
+
+    for (affected, location) in &affected_nodes {
+        world.entity_mut(*affected).insert(Stale);
+    }
+
+    for (ref_, write_locations) in world
+        .get_resource_mut::<WriteLocations>()
+        .unwrap()
+        .drain()
+        .collect::<HashMap<_, Vec<_>>>()
+    {
+        let ref_location = *world
+            .get::<RefInitLocation>(ref_)
+            .expect("the Ref has been deallocated");
+
+        debug!(
+            "[execute_action_tree] Ref at location {} was written to at locations:\n{}",
+            *ref_location,
+            write_locations
+                .iter()
+                .map(|l| format!("\t{}", l))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
 }
