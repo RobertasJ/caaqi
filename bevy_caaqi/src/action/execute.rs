@@ -147,27 +147,22 @@ fn rewind_action(world: &mut World, node: Entity, tree_root: Entity) {
     );
 
     fn rewind_node(world: &mut World, node: Entity) {
-        let binding = TreeOrder::new(world, node);
-        let tree_order = binding.backward();
+        let order = TreeOrder::new(world, node);
 
-        for node in tree_order {
-            if world.get::<ActionRewind>(node).is_some() {
-                ActionRewind::run(world, node);
+        for entity in order.forward() {
+            if world.get::<SyncedWith>(entity).is_some() {
+                world.entity_mut(entity).remove::<SyncedWith>();
+            }
+        }
+
+        for entity in order.backward() {
+            if world.get::<ActionRewind>(entity).is_some() {
+                ActionRewind::run(world, entity);
             }
         }
 
         let mut entity_mut = world.entity_mut(node);
         entity_mut.despawn_children();
-        entity_mut.remove::<SubscribedTo>();
-        let synced_with = entity_mut.take::<SyncedWith>().unwrap();
-
-        for sync_key in &*synced_with {
-            let mut sync_key_to_actions = world.resource_mut::<SyncKeyToActions>();
-            let actions = sync_key_to_actions
-                .get_mut(sync_key)
-                .expect("SyncKey was destroyed");
-            actions.remove(&node);
-        }
     }
 
     fn traverse_actions_rev(
