@@ -97,7 +97,7 @@ impl Command for FlushWrites {
 fn rewind_action(world: &mut World, node: Entity, tree_root: Entity) {
     let mut to_rewind = HashSet::<Entity>::new();
     let sync_key_to_actions = world.resource::<SyncKeyToActions>();
-    let tree_order = TreeOrder::new(world, node);
+    let tree_order = TreeOrder::new(world, tree_root);
 
     fn rec(
         world: &World,
@@ -116,13 +116,13 @@ fn rewind_action(world: &mut World, node: Entity, tree_root: Entity) {
             let actions = sync_key_to_actions
                 .get(sync_key)
                 .expect("SyncKey was destroyed with registered synced rewinds");
-            for node in tree_order.backward() {
-                if node == node {
+            for tree_node in tree_order.backward() {
+                if tree_node == node {
                     break;
                 }
 
-                if actions.contains(&node) {
-                    rec(world, node, to_rewind, sync_key_to_actions, tree_order);
+                if actions.contains(&tree_node) {
+                    rec(world, tree_node, to_rewind, sync_key_to_actions, tree_order);
                 }
             }
         }
@@ -159,7 +159,15 @@ fn rewind_action(world: &mut World, node: Entity, tree_root: Entity) {
         let mut entity_mut = world.entity_mut(node);
         entity_mut.despawn_children();
         entity_mut.remove::<SubscribedTo>();
-        entity_mut.remove::<SyncedWith>();
+        let synced_with = entity_mut.take::<SyncedWith>().unwrap();
+
+        for sync_key in &*synced_with {
+            let mut sync_key_to_actions = world.resource_mut::<SyncKeyToActions>();
+            let actions = sync_key_to_actions
+                .get_mut(sync_key)
+                .expect("SyncKey was destroyed");
+            actions.remove(&node);
+        }
     }
 
     fn traverse_actions_rev(

@@ -4,7 +4,8 @@ use bevy::{
     ecs::{
         component::Component,
         entity::Entity,
-        world::{FromWorld, World},
+        lifecycle::HookContext,
+        world::{DeferredWorld, FromWorld, World},
     },
     prelude::{Deref, DerefMut},
     ui::DefaultUiCamera,
@@ -24,7 +25,28 @@ pub struct ActionNode(pub Box<dyn FnMut(&mut World) + Send + Sync + 'static>);
 pub struct SubscribedTo(pub HashSet<RefTypeErased>);
 
 #[derive(Component, Debug, Default, Deref, DerefMut)]
+#[component(on_remove = Self::on_remove)]
 pub struct SyncedWith(pub HashSet<SyncKey>);
+
+impl SyncedWith {
+    fn on_remove(mut world: DeferredWorld, context: HookContext) {
+        let keys = world
+            .get::<SyncedWith>(context.entity)
+            .unwrap()
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+
+        let mut index = world.resource_mut::<SyncKeyToActions>();
+
+        for key in keys {
+            index
+                .get_mut(&key)
+                .expect("SyncKey was destroyed before its action")
+                .remove(&context.entity);
+        }
+    }
+}
 
 #[derive(Component, Debug, Default)]
 pub struct NeedsRun;
