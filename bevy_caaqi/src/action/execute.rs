@@ -41,12 +41,18 @@ impl Command for ExecuteActionTrees {
             tree_query_state: &mut QueryState<&Children, With<ActionNode>>,
         ) {
             if world.get::<NeedsRun>(node).is_some() && world.get::<ActionNode>(node).is_some() {
-                if world.get::<Rewound>(node).is_some() {
-                    world.entity_mut(node).remove::<Rewound>();
-                } else {
+                if world.get::<Rewound>(node).is_none() {
                     rewind_action(world, node, root);
+                } else {
+                    debug!(
+                        "[execute_action_tree] Node {:?} at {} already rewound, skipping rewind",
+                        node,
+                        world
+                            .get::<ActionLocation>(node)
+                            .map(|l| l.to_string())
+                            .unwrap_or("Not Given".to_string()),
+                    );
                 }
-                world.entity_mut(node).remove::<NeedsRun>();
                 run_action_node(world, node);
             } else {
                 let children = tree_query_state
@@ -66,15 +72,15 @@ impl Command for ExecuteActionTrees {
             traverse_tree(root, root, world, &mut tree_query_state);
         }
 
-        let stale_nodes = world
+        let nodes_to_rerun = world
             .query_filtered::<Entity, (With<NeedsRun>, With<ActionNode>)>()
             .iter(world)
             .collect::<Vec<_>>();
 
-        if !stale_nodes.is_empty() {
+        if !nodes_to_rerun.is_empty() {
             debug!(
-                "[execute_action_tree] Stale nodes detected after executing action trees. Re-running. Locations:\n{}",
-                stale_nodes
+                "[execute_action_tree] Nodes to re-run detected after executing action trees. Re-running. Locations:\n{}",
+                nodes_to_rerun
                     .iter()
                     .map(|node| {
                         world
@@ -101,6 +107,15 @@ impl Command for FlushWrites {
 }
 
 fn rewind_action(world: &mut World, node: Entity, tree_root: Entity) {
+    debug!(
+        "[rewind_action] Rewinding node {:?} at {}",
+        node,
+        world
+            .get::<ActionLocation>(node)
+            .map(|l| l.to_string())
+            .unwrap_or("Not Given".to_string()),
+    );
+
     let mut to_rewind = HashSet::<Entity>::new();
     let sync_key_to_actions = world.resource::<SyncKeyToActions>();
     let tree_order = TreeOrder::new(world, tree_root);
@@ -112,44 +127,96 @@ fn rewind_action(world: &mut World, node: Entity, tree_root: Entity) {
         sync_key_to_actions: &SyncKeyToActions,
         tree_order: &TreeOrder,
     ) {
+        debug!(
+            "[rewind_action] Adding node {:?} at {} to rewind set",
+            node,
+            world
+                .get::<ActionLocation>(node)
+                .map(|l| l.to_string())
+                .unwrap_or("Not Given".to_string()),
+        );
         if !to_rewind.insert(node) {
+            debug!(
+                "[rewind_action] Node {:?} at {} already in rewind set, skipping",
+                node,
+                world
+                    .get::<ActionLocation>(node)
+                    .map(|l| l.to_string())
+                    .unwrap_or("Not Given".to_string()),
+            );
             return;
         }
 
         let sync_keys = world.get::<SyncedWith>(node).unwrap();
 
         for sync_key in &**sync_keys {
+            debug!(
+                "[rewind_action] Finding synced nodes for node {:?} at {} with SyncKey {:?}",
+                node,
+                world
+                    .get::<ActionLocation>(node)
+                    .map(|l| l.to_string())
+                    .unwrap_or("Not Given".to_string()),
+                sync_key,
+            );
+
             let actions = sync_key_to_actions
                 .get(sync_key)
                 .expect("SyncKey was destroyed with registered synced rewinds");
             for tree_node in tree_order.backward() {
                 if tree_node == node {
+                    debug!(
+                        "[rewind_action] Reached node {:?} at {} while finding synced nodes for node {:?} at {} with SyncKey {:?}, stopping search",
+                        tree_node,
+                        world
+                            .get::<ActionLocation>(tree_node)
+                            .map(|l| l.to_string())
+                            .unwrap_or("Not Given".to_string()),
+                        node,
+                        world
+                            .get::<ActionLocation>(node)
+                            .map(|l| l.to_string())
+                            .unwrap_or("Not Given".to_string()),
+                        sync_key,
+                    );
                     break;
                 }
 
                 if actions.contains(&tree_node) {
+                    debug!(
+                        "[rewind_action] Found synced node {:?} at {} for node {:?} at {} with SyncKey {:?}, adding to rewind set",
+                        tree_node,
+                        world
+                            .get::<ActionLocation>(tree_node)
+                            .map(|l| l.to_string())
+                            .unwrap_or("Not Given".to_string()),
+                        node,
+                        world
+                            .get::<ActionLocation>(node)
+                            .map(|l| l.to_string())
+                            .unwrap_or("Not Given".to_string()),
+                        sync_key,
+                    );
                     rec(world, tree_node, to_rewind, sync_key_to_actions, tree_order);
                 }
             }
         }
     }
 
+    debug!(
+        "[rewind_action] Finding synced nodes for rewind of node {:?} at {}",
+        node,
+        world
+            .get::<ActionLocation>(node)
+            .map(|l| l.to_string())
+            .unwrap_or("Not Given".to_string())
+    );
     rec(
         world,
         node,
         &mut to_rewind,
         sync_key_to_actions,
         &tree_order,
-    );
-
-    debug!(
-        "[rewind_action] Rewinding {} nodes for node {:?} at {}",
-        to_rewind.len(),
-        node,
-        world
-            .get::<ActionLocation>(node)
-            .map(|l| l.to_string())
-            .unwrap_or("Not Given".to_string()),
     );
 
     fn rewind_node(world: &mut World, node: Entity) {
@@ -168,6 +235,7 @@ fn rewind_action(world: &mut World, node: Entity, tree_root: Entity) {
         }
 
         let mut entity_mut = world.entity_mut(node);
+        entity_mut.insert(Rewound).insert(NeedsRun);
         entity_mut.despawn_children();
     }
 
@@ -179,10 +247,25 @@ fn rewind_action(world: &mut World, node: Entity, tree_root: Entity) {
     ) {
         if to_rewind.contains(&node) {
             if world.get::<Rewound>(node).is_none() {
+                debug!(
+                    "[rewind_action] Rewinding node {:?} at {}",
+                    node,
+                    world
+                        .get::<ActionLocation>(node)
+                        .map(|l| l.to_string())
+                        .unwrap_or("Not Given".to_string()),
+                );
                 rewind_node(world, node);
+            } else {
+                debug!(
+                    "[rewind_action] Node {:?} at {} already rewound, skipping",
+                    node,
+                    world
+                        .get::<ActionLocation>(node)
+                        .map(|l| l.to_string())
+                        .unwrap_or("Not Given".to_string()),
+                );
             }
-
-            world.entity_mut(node).insert(Rewound).insert(NeedsRun);
         } else {
             let children = tree_query_state
                 .query(world)
@@ -197,6 +280,15 @@ fn rewind_action(world: &mut World, node: Entity, tree_root: Entity) {
     }
 
     let mut tree_query_state = world.query_filtered::<&Children, With<ActionNode>>();
+
+    debug!(
+        "[rewind_action] Rewinding nodes in reverse order for node {:?} at {}",
+        node,
+        world
+            .get::<ActionLocation>(node)
+            .map(|l| l.to_string())
+            .unwrap_or("Not Given".to_string()),
+    );
     traverse_actions_rev(world, tree_root, &to_rewind, &mut tree_query_state);
 }
 
@@ -218,12 +310,10 @@ pub fn run_action_node(world: &mut World, node: Entity) {
     let sync_keys = sync_keys_scope.collect(&mut *world);
 
     debug!(
-        "[execute_action_tree]\n\
-         Node: {:?}\n\
-         Location: {}\n\
-         Dependencies ({}):\n{}\n\
-         Sub-actions or rewinds: {}\n\
-         Sync keys: {}",
+        "[execute_action_tree] Ran node {:?} at Location {}\n\
+         \tDependencies ({}):\n{}\
+         \tSub-actions or rewinds: {}\n\
+         \tSync keys: {}",
         node,
         world
             .get::<ActionLocation>(node)
@@ -232,9 +322,9 @@ pub fn run_action_node(world: &mut World, node: Entity) {
         depends_on.len(),
         depends_on
             .iter()
-            .map(|r| format!("\t{}", r.location.to_string()))
+            .map(|r| format!("\t{}\n", r.location.to_string()))
             .collect::<Vec<_>>()
-            .join("\n"),
+            .join(""),
         sub_actions_or_rewinds.len(),
         sync_keys.len(),
     );
@@ -259,6 +349,10 @@ pub fn run_action_node(world: &mut World, node: Entity) {
             .map(|ae| *ae)
             .collect::<Vec<_>>(),
     );
+    entity_mut.remove::<NeedsRun>();
+    entity_mut.remove::<Rewound>();
+
+    flush_tracked_writes(world);
 }
 
 pub fn flush_tracked_writes(world: &mut World) {
