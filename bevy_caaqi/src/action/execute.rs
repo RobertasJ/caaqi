@@ -8,6 +8,7 @@ use crate::{
             ActionLocation, ActionRewind, NeedsRun, Rewound, SubscribedTo, SyncedWith, TreeNode,
         },
         sync::{SyncKey, SyncKeyToActions},
+        tree_order::{self, TreeOrder},
     },
     tracked_value::{RefInitLocation, RefNotify, RefSubscribe, RefTypeErased},
 };
@@ -96,12 +97,14 @@ impl Command for FlushWrites {
 fn rewind_action(world: &mut World, node: Entity, tree_root: Entity) {
     let mut to_rewind = HashSet::<Entity>::new();
     let sync_key_to_actions = world.resource::<SyncKeyToActions>();
+    let tree_order = TreeOrder::new(world, node);
 
     fn rec(
         world: &World,
         node: Entity,
         to_rewind: &mut HashSet<Entity>,
         sync_key_to_actions: &SyncKeyToActions,
+        tree_order: &TreeOrder,
     ) {
         if !to_rewind.insert(node) {
             return;
@@ -112,24 +115,26 @@ fn rewind_action(world: &mut World, node: Entity, tree_root: Entity) {
         for sync_key in &**sync_keys {
             let actions = sync_key_to_actions
                 .get(sync_key)
-                .expect("SyncKey was destroyed");
-
-            let mut after_node = false;
-            let actions_after_node = actions.iter().skip_while(|&&action| {
-                let prev = after_node;
-                if action == node {
-                    after_node = true;
+                .expect("SyncKey was destroyed with registered synced rewinds");
+            for node in tree_order.backward() {
+                if node == node {
+                    break;
                 }
-                !prev
-            });
 
-            for action in actions_after_node {
-                rec(world, *action, to_rewind, sync_key_to_actions);
+                if actions.contains(&node) {
+                    rec(world, node, to_rewind, sync_key_to_actions, tree_order);
+                }
             }
         }
     }
 
-    rec(world, node, &mut to_rewind, sync_key_to_actions);
+    rec(
+        world,
+        node,
+        &mut to_rewind,
+        sync_key_to_actions,
+        &tree_order,
+    );
 
     debug!(
         "[rewind_action] Rewinding {} nodes for node {:?} at {}",
@@ -142,52 +147,19 @@ fn rewind_action(world: &mut World, node: Entity, tree_root: Entity) {
     );
 
     fn rewind_node(world: &mut World, node: Entity) {
-        let mut rewinds = world.query_filtered::<(
-        Entity,
-        Option<&Children>,
-        Has<ActionRewind>,
-    ), Or<(With<ActionRewind>, With<ActionNode>)>>();
-        let rewinds = rewinds.query(world);
+        let binding = TreeOrder::new(world, node);
+        let tree_order = binding.backward();
 
-        let mut rewinds_to_run = vec![];
-
-        fn rec(
-            node: Entity,
-            rewinds: &Query<
-                (Entity, Option<&Children>, Has<ActionRewind>),
-                Or<(With<ActionRewind>, With<ActionNode>)>,
-            >,
-            rewinds_to_run: &mut Vec<Entity>,
-        ) {
-            let (_, node_children, _) = rewinds.get(node).unwrap();
-            if let Some(children) = node_children {
-                for child in children {
-                    let (child_entity, _, has_rewind) = rewinds.get(*child).unwrap();
-                    if has_rewind {
-                        rewinds_to_run.push(child_entity);
-                    } else {
-                        rec(child_entity, rewinds, rewinds_to_run);
-                    }
-                }
+        for node in tree_order {
+            if world.get::<ActionRewind>(node).is_some() {
+                ActionRewind::run(world, node);
             }
-        }
-
-        rec(node, &rewinds, &mut rewinds_to_run);
-
-        rewinds_to_run.reverse();
-
-        for rewind in rewinds_to_run {
-            let reads_scope = Scope::<RefSubscribe>::new(&mut *world);
-            let writes_scope = Scope::<RefNotify>::new(&mut *world);
-
-            ActionRewind::run(world, rewind);
-
-            let _ = reads_scope.collect(&mut *world);
-            let _ = writes_scope.collect(&mut *world);
         }
 
         let mut entity_mut = world.entity_mut(node);
         entity_mut.despawn_children();
+        entity_mut.remove::<SubscribedTo>();
+        entity_mut.remove::<SyncedWith>();
     }
 
     fn traverse_actions_rev(
@@ -258,7 +230,7 @@ pub fn run_action_node(world: &mut World, node: Entity) {
         let actions = sync_key_to_actions
             .get_mut(sync_key)
             .expect("SyncKey was destroyed");
-        actions.push(node);
+        actions.insert(node);
     }
 
     let mut entity_mut = world.entity_mut(node);
