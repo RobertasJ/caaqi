@@ -180,7 +180,7 @@ fn rewind_action(world: &mut World, node: Entity, tree_root: Entity) {
             let reads_scope = Scope::<RefSubscribe>::new(&mut *world);
             let writes_scope = Scope::<RefNotify>::new(&mut *world);
 
-            ActionRewind::run(world, node);
+            ActionRewind::run(world, rewind);
 
             let _ = reads_scope.collect(&mut *world);
             let _ = writes_scope.collect(&mut *world);
