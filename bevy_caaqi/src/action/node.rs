@@ -12,38 +12,39 @@ use bevy::{
 use smallvec::SmallVec;
 
 use crate::{
-    action::sync::{SyncKey, SyncKeyToRewinds},
+    action::sync::{SyncKey, SyncKeyToActions},
     tracked_value::RefTypeErased,
 };
 
 #[derive(Component)]
-#[require(Deps, TreeNode)]
+#[require(SubscribedTo, SyncedWith, TreeNode)]
 pub struct ActionNode(pub Box<dyn FnMut(&mut World) + Send + Sync + 'static>);
 
 #[derive(Component, Debug, Default, Deref, DerefMut)]
-pub struct Deps(pub HashSet<RefTypeErased>);
+pub struct SubscribedTo(pub HashSet<RefTypeErased>);
+
+#[derive(Component, Debug, Default, Deref, DerefMut)]
+pub struct SyncedWith(pub HashSet<SyncKey>);
 
 #[derive(Component, Debug, Default)]
-pub struct Stale;
+pub struct NeedsRun;
 
-#[derive(Debug, Clone, Component, Deref, DerefMut)]
+#[derive(Component, Debug, Default)]
+pub struct Rewound;
+
+#[derive(Debug, Clone, Copy, Component, Deref, DerefMut)]
 pub struct ActionLocation(pub &'static std::panic::Location<'static>);
 
 #[derive(Component)]
 #[require(TreeNode)]
 pub struct ActionRewind {
     undo: Box<dyn FnOnce(&mut World) + Send + Sync + 'static>,
-    sync_keys: SmallVec<[SyncKey; 1]>,
 }
 
 impl ActionRewind {
-    pub fn new(
-        undo: impl FnOnce(&mut World) + Send + Sync + 'static,
-        sync_keys: SmallVec<[SyncKey; 1]>,
-    ) -> Self {
+    pub fn new(undo: impl FnOnce(&mut World) + Send + Sync + 'static) -> Self {
         Self {
             undo: Box::new(undo),
-            sync_keys,
         }
     }
 
@@ -54,22 +55,6 @@ impl ActionRewind {
             .expect("Node is not an ActionRewind");
 
         (rewind.undo)(world);
-
-        let mut sync_keys_to_rewinds = world.resource_mut::<SyncKeyToRewinds>();
-
-        for key in rewind.sync_keys {
-            let rewinds = sync_keys_to_rewinds
-                .get_mut(&key)
-                .expect("SyncKey was destroyed before the rewind could be run");
-
-            let last = rewinds
-                .pop()
-                .expect("Expected a rewind to be registered for the SyncKey");
-            assert!(
-                last == node,
-                "Rewinds for a SyncKey must be run in reverse order of registration"
-            );
-        }
 
         world.despawn(node);
     }

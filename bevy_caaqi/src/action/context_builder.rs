@@ -18,7 +18,7 @@ use smallvec::SmallVec;
 use crate::{
     action::{
         execute::{ExecuteActionTrees, run_action_node},
-        node::{ActionLocation, ActionNode, ActionRewind, Deps, Stale},
+        node::{ActionLocation, ActionNode, ActionRewind, NeedsRun, Rewound, SubscribedTo},
         sync::SyncKey,
     },
     tracked_value::{RefInitLocation, RefValue},
@@ -37,6 +37,8 @@ pub fn detached_action(
             .spawn((
                 ActionNode(Box::new(action)),
                 ActionLocation(Location::caller()),
+                NeedsRun,
+                Rewound,
             ))
             .id(),
     )
@@ -55,7 +57,7 @@ pub fn defer_action_eval(
 ) {
     let node = ActionNode(Box::new(action));
 
-    let node = commands.spawn((node, Stale)).id();
+    commands.spawn((node, NeedsRun, Rewound));
 
     commands.queue(ExecuteActionTrees);
 }
@@ -69,10 +71,10 @@ pub fn synced_rewind(
     keys: impl IntoIterator<Item = SyncKey>,
     undo: impl FnOnce(&mut World) + Send + Sync + 'static,
 ) {
-    let node = ActionEntity(
-        world
-            .spawn(ActionRewind::new(undo, keys.into_iter().collect()))
-            .id(),
-    );
+    let node = ActionEntity(world.spawn(ActionRewind::new(undo)).id());
     Attached::attach(&mut *world, node);
+
+    for key in keys {
+        Attached::attach(&mut *world, key);
+    }
 }

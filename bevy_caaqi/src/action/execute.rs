@@ -2,8 +2,12 @@ use std::{collections::HashSet, ops::Deref};
 
 use crate::{
     action::{
+        self,
         context_builder::ActionEntity,
-        node::{ActionLocation, ActionRewind, Deps, Stale, TreeNode},
+        node::{
+            ActionLocation, ActionRewind, NeedsRun, Rewound, SubscribedTo, SyncedWith, TreeNode,
+        },
+        sync::{SyncKey, SyncKeyToActions},
     },
     tracked_value::{RefInitLocation, RefNotify, RefSubscribe, RefTypeErased},
 };
@@ -36,13 +40,18 @@ impl Command for ExecuteActionTrees {
             .collect::<Vec<_>>();
 
         fn traverse_tree(
+            root: Entity,
             node: Entity,
             world: &mut World,
             tree_query_state: &mut QueryState<&Children, With<ActionNode>>,
         ) {
-            if world.get::<Stale>(node).is_some() && world.get::<ActionNode>(node).is_some() {
-                world.entity_mut(node).remove::<Stale>();
-                rewind_action(world, node);
+            if world.get::<NeedsRun>(node).is_some() && world.get::<ActionNode>(node).is_some() {
+                if world.get::<Rewound>(node).is_some() {
+                    world.entity_mut(node).remove::<Rewound>();
+                } else {
+                    rewind_action(world, node, root);
+                }
+                world.entity_mut(node).remove::<NeedsRun>();
                 run_action_node(world, node);
             } else {
                 let children = tree_query_state
@@ -52,18 +61,18 @@ impl Command for ExecuteActionTrees {
                     .unwrap_or_default();
 
                 for child in children {
-                    traverse_tree(child, world, tree_query_state);
+                    traverse_tree(root, child, world, tree_query_state);
                 }
             }
         }
 
         let mut tree_query_state = world.query_filtered::<&Children, With<ActionNode>>();
         for root in root_nodes {
-            traverse_tree(root, world, &mut tree_query_state);
+            traverse_tree(root, root, world, &mut tree_query_state);
         }
 
         let has_stale_nodes = world
-            .query_filtered::<Entity, (With<Stale>, With<ActionNode>)>()
+            .query_filtered::<Entity, (With<NeedsRun>, With<ActionNode>)>()
             .iter(world)
             .next()
             .is_some();
@@ -84,35 +93,79 @@ impl Command for FlushWrites {
     }
 }
 
-fn rewind_action(world: &mut World, node: Entity) {
-    let mut rewinds =
-        world.query_filtered::<(Entity, Option<&Children>, Has<ActionRewind>), With<TreeNode>>();
-    let rewinds = rewinds.query(world);
-
-    let mut rewinds_to_run = HashSet::<Entity>::new();
+fn rewind_action(world: &mut World, node: Entity, tree_root: Entity) {
+    let mut to_rewind = HashSet::<Entity>::new();
+    let sync_key_to_actions = world.resource::<SyncKeyToActions>();
 
     fn rec(
+        world: &World,
         node: Entity,
-        rewinds: &Query<(Entity, Option<&Children>, Has<ActionRewind>), With<TreeNode>>,
-        rewinds_to_run: &mut HashSet<Entity>,
+        to_rewind: &mut HashSet<Entity>,
+        sync_key_to_actions: &SyncKeyToActions,
     ) {
-        let (_, node_children, _) = rewinds.get(node).unwrap();
-        if let Some(children) = node_children {
-            for child in children {
-                let (child_entity, _, has_rewind) = rewinds.get(*child).unwrap();
-                if has_rewind {
-                    rewinds_to_run.insert(child_entity);
-                } else {
-                    rec(child_entity, rewinds, rewinds_to_run);
+        let sync_keys = world.get::<SyncedWith>(node).unwrap();
+
+        for sync_key in &**sync_keys {
+            let actions = sync_key_to_actions
+                .get(sync_key)
+                .expect("SyncKey was destroyed");
+
+            let mut after_node = false;
+            let actions_after_node = actions.iter().skip_while(|&&action| {
+                let prev = after_node;
+                if action == node {
+                    after_node = true;
                 }
+                !prev
+            });
+
+            for action in actions_after_node {
+                rec(world, *action, to_rewind, sync_key_to_actions);
             }
         }
     }
 
-    rec(node, &rewinds, &mut rewinds_to_run);
+    rec(world, node, &mut to_rewind, sync_key_to_actions);
 
-    let mut entity_mut = world.entity_mut(node);
-    entity_mut.despawn_children();
+    debug!(
+        "[rewind_action] Rewinding {} nodes for node {:?} at {}",
+        to_rewind.len(),
+        node,
+        world
+            .get::<ActionLocation>(node)
+            .map(|l| l.to_string())
+            .unwrap_or("Not Given".to_string()),
+    );
+
+    fn rewind_node(world: &mut World, node: Entity) {}
+
+    fn traverse_actions_rev(
+        world: &mut World,
+        node: Entity,
+        to_rewind: &HashSet<Entity>,
+        tree_query_state: &mut QueryState<&Children, With<ActionNode>>,
+    ) {
+        if to_rewind.contains(&node) {
+            if world.get::<Rewound>(node).is_none() {
+                rewind_node(world, node);
+            }
+
+            world.entity_mut(node).insert(Rewound).insert(NeedsRun);
+        } else {
+            let children = tree_query_state
+                .query(world)
+                .get(node)
+                .map(|c| c.to_vec())
+                .unwrap_or_default();
+
+            for child in children.iter().rev() {
+                traverse_actions_rev(world, *child, to_rewind, tree_query_state);
+            }
+        }
+    }
+
+    let mut tree_query_state = world.query_filtered::<&Children, With<ActionNode>>();
+    traverse_actions_rev(world, node, &to_rewind, &mut tree_query_state);
 }
 
 pub fn run_action_node(world: &mut World, node: Entity) {
@@ -124,14 +177,16 @@ pub fn run_action_node(world: &mut World, node: Entity) {
 
     let dependencies_scope = Scope::<RefSubscribe>::new(&mut *world);
     let action_entities_scope = Scope::<ActionEntity>::new(&mut *world);
+    let sync_keys_scope = Scope::<SyncKey>::new(&mut *world);
 
     (action_node.0)(world);
 
     let sub_actions_or_rewinds = action_entities_scope.collect(&mut *world);
     let depends_on = dependencies_scope.collect(&mut *world);
+    let sync_keys = sync_keys_scope.collect(&mut *world);
 
     debug!(
-        "[execute_action_tree] Node {:?} at {} depends on {} Refs at:\n{}\n and has {} sub-actions or rewinds.",
+        "[execute_action_tree] Node {:?} at {} depends on {} Refs at:\n{}\n and has {} sub-actions or rewinds and {} sync keys.",
         node,
         world
             .get::<ActionLocation>(node)
@@ -143,21 +198,30 @@ pub fn run_action_node(world: &mut World, node: Entity) {
             .map(|r| format!("\t{}", r.location.to_string()))
             .collect::<Vec<_>>()
             .join("\n"),
-        depends_on.len(),
+        sub_actions_or_rewinds.len(),
+        sync_keys.len(),
     );
+
+    for sync_key in &sync_keys {
+        let mut sync_key_to_actions = world.resource_mut::<SyncKeyToActions>();
+        let actions = sync_key_to_actions
+            .get_mut(sync_key)
+            .expect("SyncKey was destroyed");
+        actions.push(node);
+    }
 
     let mut entity_mut = world.entity_mut(node);
     entity_mut.insert(action_node);
+    entity_mut.insert(SyncedWith(sync_keys.into_iter().collect()));
+    entity_mut.insert(SubscribedTo(
+        depends_on.into_iter().map(|r| r.ref_).collect(),
+    ));
     entity_mut.add_children(
         &sub_actions_or_rewinds
             .into_iter()
             .map(|ae| *ae)
             .collect::<Vec<_>>(),
     );
-
-    entity_mut.insert(Deps(depends_on.into_iter().map(|r| r.ref_).collect()));
-
-    flush_tracked_writes(world);
 }
 
 pub fn flush_tracked_writes(world: &mut World) {
@@ -171,11 +235,13 @@ pub fn flush_tracked_writes(world: &mut World) {
     );
 
     let mut affected_nodes = vec![];
-    let mut action_nodes =
-        world.query_filtered::<(Entity, &Deps, &ActionLocation), With<ActionNode>>();
 
-    for (node, deps, location) in action_nodes.iter_mut(world) {
-        let affected = !deps.is_disjoint(&written_to);
+    // dont check for a node being part of the tree
+    let mut action_nodes =
+        world.query_filtered::<(Entity, &SubscribedTo, &ActionLocation), With<ActionNode>>();
+
+    for (node, subscribed_to, location) in action_nodes.iter_mut(world) {
+        let affected = !subscribed_to.is_disjoint(&written_to);
 
         if affected {
             affected_nodes.push((node, location.0));
@@ -193,7 +259,7 @@ pub fn flush_tracked_writes(world: &mut World) {
     );
 
     for (affected, location) in &affected_nodes {
-        world.entity_mut(*affected).insert(Stale);
+        world.entity_mut(*affected).insert(NeedsRun);
     }
 
     for RefNotify { ref_, location } in writes {
