@@ -5,12 +5,10 @@ use bevy::{
         component::Component,
         entity::Entity,
         lifecycle::HookContext,
-        world::{DeferredWorld, FromWorld, World},
+        world::{DeferredWorld, World},
     },
     prelude::{Deref, DerefMut},
-    ui::DefaultUiCamera,
 };
-use smallvec::SmallVec;
 
 use crate::{
     action::sync::{SyncKey, SyncKeyToActions},

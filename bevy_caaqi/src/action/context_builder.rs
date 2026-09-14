@@ -1,27 +1,15 @@
-use std::{collections::HashSet, panic::Location};
+use std::panic::Location;
 
 use bevy::{
-    ecs::{
-        entity::Entity,
-        hierarchy::{ChildOf, Children},
-        query::{Has, Or, With},
-        system::{Commands, Query},
-        world::{self, World},
-    },
-    log::debug,
-    platform::collections::HashMap,
+    ecs::{entity::Entity, system::Commands, world::World},
     prelude::{Deref, DerefMut},
 };
 use caaqi_context::Attached;
-use smallvec::SmallVec;
 
-use crate::{
-    action::{
-        execute::{ExecuteActionTrees, run_action_node},
-        node::{ActionLocation, ActionNode, ActionRewind, NeedsRun, Rewound, SubscribedTo},
-        sync::SyncKey,
-    },
-    tracked_value::{RefInitLocation, RefValue},
+use crate::action::{
+    execute::{ExecuteActionTrees, run_action_node},
+    node::{ActionLocation, ActionNode, ActionRewind, NeedsRun, Rewound},
+    sync::SyncKey,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deref, DerefMut)]
@@ -51,13 +39,14 @@ pub fn action(world: &mut World, action: impl FnMut(&mut World) + Send + Sync + 
     run_action_node(world, *node);
 }
 
+#[track_caller]
 pub fn defer_action_eval(
     mut commands: Commands,
     action: impl FnMut(&mut World) + Send + Sync + 'static,
 ) {
     let node = ActionNode(Box::new(action));
 
-    commands.spawn((node, NeedsRun, Rewound));
+    commands.spawn((node, ActionLocation(Location::caller()), NeedsRun, Rewound));
 
     commands.queue(ExecuteActionTrees);
 }

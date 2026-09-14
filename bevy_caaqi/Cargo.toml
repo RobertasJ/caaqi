@@ -4,9 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bevy.workspace = true
+bevy = { workspace = true, features = ["bevy_log"] }
 caaqi_context = { package = "caaqi-context", path = "../caaqi_context" }
-bon = "3"
 atomic_refcell = "0.1.14"
 ouroboros = "0.18.5"
 smallvec.workspace = true
+
+[dev-dependencies]
+googletest = "0.14"
+tracing-subscriber = "0.3"

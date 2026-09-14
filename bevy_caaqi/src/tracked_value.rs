@@ -3,32 +3,21 @@ use bevy::{
     ecs::{
         component::Component,
         entity::{Entity, EntityNotSpawnedError},
-        resource::Resource,
-        system::{Commands, command},
-        world::{
-            self, DeferredWorld, EntityMut, EntityRef, EntityWorldMut, Mut, World,
-            error::EntityMutableFetchError,
-        },
+        world::{self, DeferredWorld, EntityMut, EntityRef, World, error::EntityMutableFetchError},
     },
     prelude::{Deref, DerefMut},
-    state::commands,
 };
 use caaqi_context::Attached;
 use ouroboros::self_referencing;
-use smallvec::SmallVec;
 use std::{
     any::Any,
-    collections::{HashMap, HashSet},
     marker::PhantomData,
     ops::{Deref, DerefMut},
     panic::Location,
     sync::Arc,
 };
 
-use crate::action::{
-    context_builder::{action, rewind},
-    execute::ExecuteActionTrees,
-};
+use crate::action::context_builder::{action, rewind};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Ref<T: Send + Sync + 'static>(Entity, std::marker::PhantomData<T>);

@@ -1,33 +1,27 @@
-use std::{collections::HashSet, ops::Deref};
+use std::collections::HashSet;
 
 use crate::{
     action::{
-        self,
         context_builder::ActionEntity,
-        node::{
-            ActionLocation, ActionRewind, NeedsRun, Rewound, SubscribedTo, SyncedWith, TreeNode,
-        },
+        node::{ActionLocation, ActionRewind, NeedsRun, Rewound, SubscribedTo, SyncedWith},
         sync::{SyncKey, SyncKeyToActions},
-        tree_order::{self, TreeOrder},
+        tree_order::TreeOrder,
     },
-    tracked_value::{RefInitLocation, RefNotify, RefSubscribe, RefTypeErased},
+    tracked_value::{RefInitLocation, RefNotify, RefSubscribe},
 };
 use bevy::{
     ecs::{
         entity::Entity,
         hierarchy::{ChildOf, Children},
-        query::{Has, Or, QueryState, With, Without},
-        resource::Resource,
-        system::{Command, Query},
-        world::{EntityMut, EntityWorldMut, World},
+        query::{QueryState, With, Without},
+        system::Command,
+        world::World,
     },
     log::debug,
-    platform::collections::HashMap,
-    prelude::{Deref, DerefMut},
 };
 use caaqi_context::{Attached, Scope};
 
-use crate::action::node::{self, ActionNode};
+use crate::action::node::ActionNode;
 
 pub struct ExecuteActionTrees;
 
@@ -72,13 +66,25 @@ impl Command for ExecuteActionTrees {
             traverse_tree(root, root, world, &mut tree_query_state);
         }
 
-        let has_stale_nodes = world
+        let stale_nodes = world
             .query_filtered::<Entity, (With<NeedsRun>, With<ActionNode>)>()
             .iter(world)
-            .next()
-            .is_some();
+            .collect::<Vec<_>>();
 
-        if has_stale_nodes {
+        if !stale_nodes.is_empty() {
+            debug!(
+                "[execute_action_tree] Stale nodes detected after executing action trees. Re-running. Locations:\n{}",
+                stale_nodes
+                    .iter()
+                    .map(|node| {
+                        world
+                            .get::<ActionLocation>(*node)
+                            .map(|location| format!("\t{}", &**location))
+                            .unwrap_or_else(|| format!("\tNode {:?} (location not given)", node))
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
             world.commands().queue(ExecuteActionTrees);
         }
     }
@@ -212,7 +218,12 @@ pub fn run_action_node(world: &mut World, node: Entity) {
     let sync_keys = sync_keys_scope.collect(&mut *world);
 
     debug!(
-        "[execute_action_tree] Node {:?} at {} depends on {} Refs at:\n{}\n and has {} sub-actions or rewinds and {} sync keys.",
+        "[execute_action_tree]\n\
+         Node: {:?}\n\
+         Location: {}\n\
+         Dependencies ({}):\n{}\n\
+         Sub-actions or rewinds: {}\n\
+         Sync keys: {}",
         node,
         world
             .get::<ActionLocation>(node)

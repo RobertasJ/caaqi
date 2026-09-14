@@ -39,3 +39,6 @@ impl Plugin for CaaqiPlugin {
             .init_resource::<SyncKeyToActions>();
     }
 }
+
+#[cfg(test)]
+mod tests;
