@@ -103,6 +103,10 @@ fn rewind_action(world: &mut World, node: Entity, tree_root: Entity) {
         to_rewind: &mut HashSet<Entity>,
         sync_key_to_actions: &SyncKeyToActions,
     ) {
+        if !to_rewind.insert(node) {
+            return;
+        }
+
         let sync_keys = world.get::<SyncedWith>(node).unwrap();
 
         for sync_key in &**sync_keys {
@@ -137,7 +141,54 @@ fn rewind_action(world: &mut World, node: Entity, tree_root: Entity) {
             .unwrap_or("Not Given".to_string()),
     );
 
-    fn rewind_node(world: &mut World, node: Entity) {}
+    fn rewind_node(world: &mut World, node: Entity) {
+        let mut rewinds = world.query_filtered::<(
+        Entity,
+        Option<&Children>,
+        Has<ActionRewind>,
+    ), Or<(With<ActionRewind>, With<ActionNode>)>>();
+        let rewinds = rewinds.query(world);
+
+        let mut rewinds_to_run = vec![];
+
+        fn rec(
+            node: Entity,
+            rewinds: &Query<
+                (Entity, Option<&Children>, Has<ActionRewind>),
+                Or<(With<ActionRewind>, With<ActionNode>)>,
+            >,
+            rewinds_to_run: &mut Vec<Entity>,
+        ) {
+            let (_, node_children, _) = rewinds.get(node).unwrap();
+            if let Some(children) = node_children {
+                for child in children {
+                    let (child_entity, _, has_rewind) = rewinds.get(*child).unwrap();
+                    if has_rewind {
+                        rewinds_to_run.push(child_entity);
+                    } else {
+                        rec(child_entity, rewinds, rewinds_to_run);
+                    }
+                }
+            }
+        }
+
+        rec(node, &rewinds, &mut rewinds_to_run);
+
+        rewinds_to_run.reverse();
+
+        for rewind in rewinds_to_run {
+            let reads_scope = Scope::<RefSubscribe>::new(&mut *world);
+            let writes_scope = Scope::<RefNotify>::new(&mut *world);
+
+            ActionRewind::run(world, node);
+
+            let _ = reads_scope.collect(&mut *world);
+            let _ = writes_scope.collect(&mut *world);
+        }
+
+        let mut entity_mut = world.entity_mut(node);
+        entity_mut.despawn_children();
+    }
 
     fn traverse_actions_rev(
         world: &mut World,
@@ -165,7 +216,7 @@ fn rewind_action(world: &mut World, node: Entity, tree_root: Entity) {
     }
 
     let mut tree_query_state = world.query_filtered::<&Children, With<ActionNode>>();
-    traverse_actions_rev(world, node, &to_rewind, &mut tree_query_state);
+    traverse_actions_rev(world, tree_root, &to_rewind, &mut tree_query_state);
 }
 
 pub fn run_action_node(world: &mut World, node: Entity) {

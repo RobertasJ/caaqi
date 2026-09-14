@@ -1,6 +1,6 @@
 use bevy::{
     ecs::{entity::Entity, resource::Resource, world::World},
-    platform::collections::HashMap,
+    platform::collections::{HashMap, HashSet},
     prelude::{Deref, DerefMut},
 };
 use caaqi_context::Attached;
@@ -14,7 +14,7 @@ use crate::action::{
 pub struct SyncKey(pub Entity);
 
 #[derive(Debug, Deref, DerefMut, Default, Resource)]
-pub struct SyncKeyToActions(HashMap<SyncKey, Vec<Entity>>);
+pub struct SyncKeyToActions(HashMap<SyncKey, HashSet<Entity>>);
 
 pub fn sync_key(world: &mut World) -> SyncKey {
     let entity = world.spawn_empty().id();
@@ -22,13 +22,13 @@ pub fn sync_key(world: &mut World) -> SyncKey {
     world
         .resource_mut::<SyncKeyToActions>()
         .0
-        .insert(key, Vec::new());
+        .insert(key, HashSet::new());
 
     rewind(world, move |world| {
         let remaining = world.resource_mut::<SyncKeyToActions>().0.remove(&key);
 
         debug_assert!(
-            remaining.as_ref().is_some_and(Vec::is_empty),
+            remaining.as_ref().is_some_and(HashSet::is_empty),
             "SyncKey was destroyed with registered synced rewinds"
         );
 
