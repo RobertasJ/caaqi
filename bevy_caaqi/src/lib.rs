@@ -1,5 +1,6 @@
 pub mod action;
 pub mod tracked_value;
+pub mod value;
 
 use bevy::prelude::*;
 use caaqi_context::Attached;
