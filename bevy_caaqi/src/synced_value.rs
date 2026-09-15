@@ -58,15 +58,16 @@ pub fn synced_ref<T: Clone + Send + Sync + 'static>(world: &mut World, value: T)
 impl<T: Clone + Send + Sync + 'static> SyncedRef<T> {
     pub fn read(&self, world: &mut World) -> ReadRef<T> {
         sync_point(world, [self.sync_key]);
-        self.ref_.read(world)
+        self.ref_.read(&mut *world)
     }
 
     pub fn write(&mut self, world: &mut World) -> WriteRef<T> {
+        sync_point(world, [self.sync_key]);
         let old = self.ref_.read(&mut *world).clone();
-
         let mut ref_ = self.ref_;
         synced_rewind(world, [self.sync_key], move |world| {
-            *ref_.silent_write(world) = old;
+            *ref_.silent_write(&mut *world) = old;
+            ref_.notify_forward_only(&mut *world);
         });
 
         self.ref_.notify_forward_only(&mut *world);

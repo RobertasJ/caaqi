@@ -1072,3 +1072,44 @@ fn test_nested_sync_point_with_parent_synced_write() {
 
     expect_eq!(values.silent_read(world).as_slice(), &[100, 22, 2, 12, 99],);
 }
+
+#[gtest]
+fn test_synced_ref_writer_stops_writing() {
+    let mut app = testing_app();
+    let world = app.world_mut();
+
+    test_eval(world, move |world| {
+        let mut enabled = create_ref(world, true);
+        let mut values = crate::synced_value::synced_ref(world, Vec::<i32>::new());
+
+        action(world, move |world| {
+            if *enabled.read(&mut *world) {
+                values.write(world).push(1);
+                record(world, TestEvent::Ran("push"));
+            } else {
+                record(world, TestEvent::Ran("skip"));
+            }
+        });
+
+        action(world, move |world| {
+            let len = values.read(world).len() as i32;
+            record(world, TestEvent::Read(len));
+        });
+
+        action(world, move |world| {
+            *enabled.write(&mut *world) = false;
+            record(world, TestEvent::Ran("disable"));
+        });
+    });
+
+    expect_trace(
+        world,
+        &[
+            TestEvent::Ran("push"),
+            TestEvent::Read(1),
+            TestEvent::Ran("disable"),
+            TestEvent::Ran("skip"),
+            TestEvent::Read(0),
+        ],
+    );
+}

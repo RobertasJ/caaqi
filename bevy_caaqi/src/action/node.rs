@@ -9,7 +9,7 @@ use bevy::{
     },
     prelude::{Deref, DerefMut},
 };
-use caaqi_context::Scope;
+use caaqi_context::{Attached, Scope};
 
 use crate::{
     action::sync::{SyncKey, SyncKeyToActions},
@@ -81,7 +81,13 @@ impl ActionRewind {
         (rewind.undo)(world);
 
         let _ = read_scope.collect(&mut *world);
-        let _ = write_scope.collect(&mut *world);
+        let writes = write_scope.collect(&mut *world);
+
+        for write in writes {
+            if write.forward_only {
+                Attached::attach(&mut *world, write);
+            }
+        }
 
         world.despawn(node);
     }
