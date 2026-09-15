@@ -9,14 +9,15 @@ use bevy::{
     },
     prelude::{Deref, DerefMut},
 };
+use caaqi_context::Scope;
 
 use crate::{
     action::sync::{SyncKey, SyncKeyToActions},
-    tracked_value::RefTypeErased,
+    tracked_value::{RefNotify, RefSubscribe, RefTypeErased},
 };
 
 #[derive(Component)]
-#[require(SubscribedTo, SyncedWith, TreeNode)]
+#[require(SyncedWith, TreeNode)]
 pub struct ActionNode(pub Box<dyn FnMut(&mut World) + Send + Sync + 'static>);
 
 #[derive(Component, Debug, Default, Deref, DerefMut)]
@@ -74,7 +75,13 @@ impl ActionRewind {
             .take::<ActionRewind>()
             .expect("Node is not an ActionRewind");
 
+        let read_scope = Scope::<RefSubscribe>::new(&mut *world);
+        let write_scope = Scope::<RefNotify>::new(&mut *world);
+
         (rewind.undo)(world);
+
+        let _ = read_scope.collect(&mut *world);
+        let _ = write_scope.collect(&mut *world);
 
         world.despawn(node);
     }

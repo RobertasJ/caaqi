@@ -1,5 +1,6 @@
 use bevy::{
     ecs::{entity::Entity, resource::Resource, world::World},
+    log::debug,
     platform::collections::{HashMap, HashSet},
     prelude::{Deref, DerefMut},
 };
@@ -56,7 +57,15 @@ pub fn sync_point(world: &mut World, keys: impl IntoIterator<Item = SyncKey>) {
 
     let TreeRoot(tree_root) = *world.resource::<TreeRoot>();
 
+    debug!(
+        "[sync_point] Rewinding action tree {:?} in tree {:?} with synced rewinds",
+        execution_root, tree_root
+    );
     rewind_action(world, execution_root, tree_root);
+    debug!(
+        "[sync_point] Finished rewinding action tree {:?} in tree {:?} with synced rewinds",
+        execution_root, tree_root
+    );
 
     world.entity_mut(execution_root).remove::<SyncedWith>();
 }

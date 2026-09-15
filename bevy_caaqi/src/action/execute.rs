@@ -18,7 +18,7 @@ use bevy::{
         system::Command,
         world::World,
     },
-    log::debug,
+    log::{debug, trace},
 };
 use caaqi_context::{Attached, Scope};
 
@@ -255,6 +255,7 @@ pub fn rewind_action(world: &mut World, node: Entity, tree_root: Entity) {
 
         let mut entity_mut = world.entity_mut(node);
         entity_mut.insert(Rewound).insert(NeedsRun);
+        entity_mut.remove::<SubscribedTo>();
         entity_mut.despawn_children();
     }
 
@@ -383,51 +384,120 @@ pub fn run_action_node(world: &mut World, node: Entity) {
 }
 
 pub fn flush_tracked_writes(world: &mut World) {
-    let writes = Attached::<RefNotify>::take(&mut *world);
-
-    let written_to = writes.iter().map(|rw| rw.ref_).collect::<HashSet<_>>();
+    let notifys = Attached::<RefNotify>::take(&mut *world);
 
     debug!(
-        "[execute_action_tree] Flushing tracked writes. Tracked writes to {} Refs.",
-        written_to.len()
+        "[execute_action_tree] Flushing tracked writes for refs at:\n{}",
+        notifys
+            .iter()
+            .map(|r| {
+                let location = world
+                    .get::<RefInitLocation>(*r.ref_)
+                    .expect("the Ref has been deallocated");
+                format!(
+                    "\tRef {} at {} was written to at {}. ({})\n",
+                    *r.ref_,
+                    **location,
+                    r.location,
+                    if r.forward_only {
+                        "Forward-only notify"
+                    } else {
+                        "Full notify"
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("")
     );
 
-    let mut affected_nodes = vec![];
+    let forward_only_writes = notifys
+        .iter()
+        .filter(|rn| rn.forward_only)
+        .map(|v| v.ref_)
+        .collect::<HashSet<_>>();
 
-    // dont check for a node being part of the tree
+    let full_writes = notifys
+        .iter()
+        .filter(|rn| !rn.forward_only)
+        .map(|v| v.ref_)
+        .collect::<HashSet<_>>();
+
+    trace!(
+        "[execute_action_tree] Full notifies for refs at:\n{}",
+        full_writes
+            .iter()
+            .map(|r| {
+                let location = world
+                    .get::<RefInitLocation>(**r)
+                    .expect("the Ref has been deallocated");
+                format!("\tRef at {} was written to\n", **location)
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    );
+
+    trace!(
+        "[execute_action_tree] Forward-only notifies for refs at:\n{}",
+        forward_only_writes
+            .iter()
+            .map(|r| {
+                let location = world
+                    .get::<RefInitLocation>(**r)
+                    .expect("the Ref has been deallocated");
+                format!("\tRef at {} was written to\n", **location)
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    );
+
+    let mut affected_nodes = HashSet::new();
+
     let mut action_nodes =
         world.query_filtered::<(Entity, &SubscribedTo, &ActionLocation), With<ActionNode>>();
 
-    for (node, subscribed_to, location) in action_nodes.iter_mut(world) {
-        let affected = !subscribed_to.is_disjoint(&written_to);
-
-        if affected {
-            affected_nodes.push((node, location.0));
+    if !full_writes.is_empty() {
+        for (entity, subscribed_to, location) in action_nodes.iter(world) {
+            if !subscribed_to.0.is_disjoint(&full_writes) {
+                debug!(
+                    "[execute_action_tree] Node {:?} at {} is affected by full notifications",
+                    entity, &**location
+                );
+                affected_nodes.insert(entity);
+            }
         }
     }
 
-    debug!(
-        "[execute_action_tree] Found {} affected nodes:\n{}",
-        affected_nodes.len(),
-        affected_nodes
-            .iter()
-            .map(|(node, location)| format!("\tNode {:?} at {}", node, location))
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
+    if !forward_only_writes.is_empty() {
+        let TreeRoot(tree_root) = *world.resource::<TreeRoot>();
+        let ExecutionRoot(execution_root) = *world.resource::<ExecutionRoot>();
+        let tree_nodes = TreeOrder::new(world, tree_root);
+        let mut is_forward = false;
 
-    for (affected, location) in &affected_nodes {
-        world.entity_mut(*affected).insert(NeedsRun);
+        for node in tree_nodes.forward() {
+            if node == execution_root {
+                is_forward = true;
+                continue;
+            }
+
+            if !is_forward {
+                continue;
+            }
+
+            let Ok((entity, subscribed_to, location)) = action_nodes.get(world, node) else {
+                continue;
+            };
+
+            if !subscribed_to.0.is_disjoint(&forward_only_writes) {
+                debug!(
+                    "[execute_action_tree] Node {:?} at {} is affected by forward-only notifications",
+                    entity, &**location
+                );
+                affected_nodes.insert(entity);
+            }
+        }
     }
 
-    for RefNotify { ref_, location } in writes {
-        let ref_location = *world
-            .get::<RefInitLocation>(*ref_)
-            .expect("the Ref has been deallocated");
-
-        debug!(
-            "[execute_action_tree] Ref at location {} was written to at {}",
-            *ref_location, location
-        );
+    for affected in &affected_nodes {
+        world.entity_mut(*affected).insert(NeedsRun);
     }
 }
