@@ -7,6 +7,7 @@ use crate::{
         context_builder::{action, defer_action_eval, rewind, synced_rewind},
         sync::create_sync_key,
     },
+    synced_value::synced_ref,
     tracked_value::{create_ref, ref_action},
 };
 
@@ -1080,7 +1081,7 @@ fn test_synced_ref_writer_stops_writing() {
 
     test_eval(world, move |world| {
         let mut enabled = create_ref(world, true);
-        let mut values = crate::synced_value::synced_ref(world, Vec::<i32>::new());
+        let mut values = synced_ref(world, Vec::<i32>::new());
 
         action(world, move |world| {
             if *enabled.read(&mut *world) {
@@ -1110,6 +1111,197 @@ fn test_synced_ref_writer_stops_writing() {
             TestEvent::Ran("disable"),
             TestEvent::Ran("skip"),
             TestEvent::Read(0),
+        ],
+    );
+}
+
+#[gtest]
+fn test_synced_ref_writer_toggles() {
+    let mut app = testing_app();
+    let world = app.world_mut();
+
+    test_eval(world, move |world| {
+        let mut phase = create_ref(world, 0);
+        let mut values = synced_ref(world, vec![100]);
+
+        action(world, move |world| {
+            expect_eq!(values.read(world).as_slice(), &[100]);
+            record(world, TestEvent::Ran("prefix read"));
+        });
+
+        action(world, move |world| {
+            let n = *phase.read(&mut *world);
+
+            if n % 2 == 1 {
+                values.write(world).push(n);
+                record(world, TestEvent::Ran("push"));
+            } else {
+                record(world, TestEvent::Ran("skip"));
+            }
+        });
+
+        action(world, move |world| {
+            values.write(world).push(99);
+            record(world, TestEvent::Ran("tail"));
+        });
+
+        action(world, move |world| {
+            // Silent: this reader must be scheduled by values.
+            let n = *phase.silent_read(&mut *world);
+            let expected = if n % 2 == 1 {
+                vec![100, n, 99]
+            } else {
+                vec![100, 99]
+            };
+
+            let actual = values.read(world);
+            expect_eq!(actual.as_slice(), expected.as_slice());
+            let len = actual.len() as i32;
+            drop(actual);
+
+            record(world, TestEvent::Read(len));
+        });
+
+        action(world, move |world| {
+            let n = *phase.read(&mut *world);
+            if n < 3 {
+                *phase.write(&mut *world) = n + 1;
+            }
+        });
+    });
+
+    let mut expected = vec![TestEvent::Ran("prefix read")];
+
+    for n in 0..=3 {
+        expected.extend([
+            TestEvent::Ran(if n % 2 == 1 { "push" } else { "skip" }),
+            TestEvent::Ran("tail"),
+            TestEvent::Read(if n % 2 == 1 { 3 } else { 2 }),
+        ]);
+    }
+
+    expect_trace(world, &expected);
+}
+
+#[gtest]
+fn test_synced_ref_multiple_writes_with_nested_action() {
+    let mut app = testing_app();
+    let world = app.world_mut();
+
+    test_eval(world, move |world| {
+        let mut phase = create_ref(world, 0);
+        let mut values = synced_ref(world, vec![100]);
+
+        action(world, move |world| {
+            let n = *phase.read(&mut *world);
+
+            expect_eq!(values.read(world).as_slice(), &[100]);
+
+            values.write(world).push(n);
+            record(world, TestEvent::Ran("parent first"));
+
+            action(world, move |world| {
+                expect_eq!(values.read(world).as_slice(), &[100, n],);
+
+                values.write(world).push(n + 10);
+                record(world, TestEvent::Ran("child"));
+            });
+
+            expect_eq!(values.read(world).as_slice(), &[100, n, n + 10],);
+
+            values.write(world).push(n + 20);
+            record(world, TestEvent::Ran("parent last"));
+        });
+
+        action(world, move |world| {
+            let n = *phase.silent_read(&mut *world);
+            let actual = values.read(world);
+
+            expect_eq!(actual.as_slice(), &[100, n, n + 10, n + 20],);
+
+            let observed = actual[1];
+            drop(actual);
+            record(world, TestEvent::Read(observed));
+        });
+
+        action(world, move |world| {
+            let n = *phase.read(&mut *world);
+            if n < 2 {
+                *phase.write(&mut *world) = n + 1;
+            }
+        });
+    });
+
+    let mut expected = vec![];
+
+    for n in 0..=2 {
+        expected.extend([
+            TestEvent::Ran("parent first"),
+            TestEvent::Ran("child"),
+            TestEvent::Ran("parent last"),
+            TestEvent::Read(n),
+        ]);
+    }
+
+    expect_trace(world, &expected);
+}
+
+#[gtest]
+fn test_synced_ref_independent_values() {
+    let mut app = testing_app();
+    let world = app.world_mut();
+
+    test_eval(world, move |world| {
+        let mut phase = create_ref(world, 0);
+        let mut left = synced_ref(world, Vec::<i32>::new());
+        let mut right = synced_ref(world, Vec::<i32>::new());
+
+        action(world, move |world| {
+            let n = *phase.read(&mut *world);
+            left.write(world).push(n);
+            record(world, TestEvent::Ran("left write"));
+        });
+
+        action(world, move |world| {
+            right.write(world).push(99);
+            record(world, TestEvent::Ran("right write"));
+        });
+
+        action(world, move |world| {
+            expect_eq!(right.read(world).as_slice(), &[99]);
+            record(world, TestEvent::Ran("right read"));
+        });
+
+        action(world, move |world| {
+            let n = *phase.silent_read(&mut *world);
+            let actual = left.read(world);
+
+            expect_eq!(actual.as_slice(), &[n]);
+
+            let observed = actual[0];
+            drop(actual);
+            record(world, TestEvent::Read(observed));
+        });
+
+        action(world, move |world| {
+            let n = *phase.read(&mut *world);
+            if n < 2 {
+                *phase.write(&mut *world) = n + 1;
+            }
+        });
+    });
+
+    expect_trace(
+        world,
+        &[
+            TestEvent::Ran("left write"),
+            TestEvent::Ran("right write"),
+            TestEvent::Ran("right read"),
+            TestEvent::Read(0),
+            TestEvent::Ran("left write"),
+            TestEvent::Read(1),
+            TestEvent::Ran("left write"),
+            TestEvent::Read(2),
         ],
     );
 }

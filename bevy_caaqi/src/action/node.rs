@@ -76,18 +76,10 @@ impl ActionRewind {
             .expect("Node is not an ActionRewind");
 
         let read_scope = Scope::<RefSubscribe>::new(&mut *world);
-        let write_scope = Scope::<RefNotify>::new(&mut *world);
 
         (rewind.undo)(world);
 
         let _ = read_scope.collect(&mut *world);
-        let writes = write_scope.collect(&mut *world);
-
-        for write in writes {
-            if write.forward_only {
-                Attached::attach(&mut *world, write);
-            }
-        }
 
         world.despawn(node);
     }

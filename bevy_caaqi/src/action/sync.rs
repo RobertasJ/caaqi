@@ -48,6 +48,7 @@ pub fn drop_sync_key(world: &mut World, key: SyncKey) {
     world.despawn(key.0);
 }
 
+#[track_caller]
 pub fn sync_point(world: &mut World, keys: impl IntoIterator<Item = SyncKey>) {
     let ExecutionRoot(execution_root) = *world.resource::<ExecutionRoot>();
 
@@ -58,13 +59,17 @@ pub fn sync_point(world: &mut World, keys: impl IntoIterator<Item = SyncKey>) {
     let TreeRoot(tree_root) = *world.resource::<TreeRoot>();
 
     debug!(
-        "[sync_point] Rewinding action tree {:?} in tree {:?} with synced rewinds",
-        execution_root, tree_root
+        "[sync_point] Sync point at {} rewinding action tree {:?} in tree {:?} with synced rewinds",
+        std::panic::Location::caller(),
+        execution_root,
+        tree_root
     );
     rewind_action(world, execution_root, tree_root);
     debug!(
-        "[sync_point] Finished rewinding action tree {:?} in tree {:?} with synced rewinds",
-        execution_root, tree_root
+        "[sync_point] Sync point at {} finished rewinding action tree {:?} in tree {:?} with synced rewinds",
+        std::panic::Location::caller(),
+        execution_root,
+        tree_root
     );
 
     world.entity_mut(execution_root).remove::<SyncedWith>();

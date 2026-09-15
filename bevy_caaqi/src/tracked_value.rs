@@ -211,6 +211,23 @@ impl<T: Any + Send + Sync + 'static> Ref<T> {
         );
     }
 
+    pub fn notify_forward_only_with_caller<'a>(
+        &self,
+        world: impl Into<DeferredWorld<'a>>,
+        caller: &'static Location<'static>,
+    ) {
+        let world = &mut world.into();
+
+        Attached::attach(
+            world.reborrow(),
+            RefNotify {
+                ref_: self.into_erased(),
+                location: caller,
+                forward_only: true,
+            },
+        );
+    }
+
     pub fn notify_with_caller(
         &self,
         world: &mut DeferredWorld,

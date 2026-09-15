@@ -51,6 +51,7 @@ impl Command for ExecuteActionTrees {
             tree_query_state: &mut QueryState<&Children, With<ActionNode>>,
         ) {
             if world.get::<NeedsRun>(node).is_some() && world.get::<ActionNode>(node).is_some() {
+                world.insert_resource(ExecutionRoot(node));
                 if world.get::<Rewound>(node).is_none() {
                     rewind_action(world, node, root);
                 } else {
@@ -63,8 +64,6 @@ impl Command for ExecuteActionTrees {
                             .unwrap_or("Not Given".to_string()),
                     );
                 }
-
-                world.insert_resource(ExecutionRoot(node));
 
                 run_action_node(world, node);
 
@@ -310,6 +309,7 @@ pub fn rewind_action(world: &mut World, node: Entity, tree_root: Entity) {
             .unwrap_or("Not Given".to_string()),
     );
     traverse_actions_rev(world, tree_root, &to_rewind, &mut tree_query_state);
+    flush_tracked_writes(world);
 }
 
 pub fn run_action_node(world: &mut World, node: Entity) {
@@ -336,7 +336,7 @@ pub fn run_action_node(world: &mut World, node: Entity) {
         "[execute_action_tree] Ran node {:?} at Location {}\n\
          \tDependencies ({}):\n{}\
          \tSub-actions or rewinds: {}\n\
-         \tSync keys: {}",
+         \tSync keys attached: {}",
         node,
         world
             .get::<ActionLocation>(node)
@@ -366,16 +366,18 @@ pub fn run_action_node(world: &mut World, node: Entity) {
     entity_mut.insert(SubscribedTo(
         depends_on.into_iter().map(|r| r.ref_).collect(),
     ));
-    entity_mut.add_children(
+
+    entity_mut.remove::<NeedsRun>();
+    entity_mut.remove::<Rewound>();
+
+    flush_tracked_writes(world);
+
+    world.entity_mut(node).add_children(
         &sub_actions_or_rewinds
             .into_iter()
             .map(|ae| *ae)
             .collect::<Vec<_>>(),
     );
-    entity_mut.remove::<NeedsRun>();
-    entity_mut.remove::<Rewound>();
-
-    flush_tracked_writes(world);
 
     world.remove_resource::<RunningAction>();
     if let Some(parent) = parent_action {

@@ -56,18 +56,21 @@ pub fn synced_ref<T: Clone + Send + Sync + 'static>(world: &mut World, value: T)
 }
 
 impl<T: Clone + Send + Sync + 'static> SyncedRef<T> {
+    #[track_caller]
     pub fn read(&self, world: &mut World) -> ReadRef<T> {
         sync_point(world, [self.sync_key]);
         self.ref_.read(&mut *world)
     }
 
+    #[track_caller]
     pub fn write(&mut self, world: &mut World) -> WriteRef<T> {
         sync_point(world, [self.sync_key]);
         let old = self.ref_.read(&mut *world).clone();
         let mut ref_ = self.ref_;
+        let caller = std::panic::Location::caller();
         synced_rewind(world, [self.sync_key], move |world| {
             *ref_.silent_write(&mut *world) = old;
-            ref_.notify_forward_only(&mut *world);
+            ref_.notify_forward_only_with_caller(&mut *world, caller);
         });
 
         self.ref_.notify_forward_only(&mut *world);

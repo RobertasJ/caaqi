@@ -31,7 +31,8 @@ fn queue_eval(commands: Commands) {
             numbers.notify_forward_only(&mut *world);
 
             synced_rewind(world, [sync_key], move |world| {
-                numbers.write(world).pop();
+                numbers.silent_write(&mut *world).pop();
+                numbers.notify_forward_only(&mut *world);
             });
         });
 
@@ -47,7 +48,8 @@ fn queue_eval(commands: Commands) {
             numbers.notify_forward_only(&mut *world);
 
             synced_rewind(world, [sync_key], move |world| {
-                numbers.write(world).pop();
+                numbers.silent_write(&mut *world).pop();
+                numbers.notify_forward_only(&mut *world);
             });
         });
 
@@ -56,7 +58,8 @@ fn queue_eval(commands: Commands) {
             numbers.notify_forward_only(&mut *world);
 
             synced_rewind(world, [sync_key], move |world| {
-                numbers.write(world).pop();
+                numbers.silent_write(&mut *world).pop();
+                numbers.notify_forward_only(&mut *world);
             });
         });
 
