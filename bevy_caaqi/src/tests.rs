@@ -732,3 +732,343 @@ fn test_synced_vec_push_pop() {
 
     expect_eq!(values.silent_read(world).as_slice(), &[100, 2, 12, 99],);
 }
+
+#[gtest]
+fn test_sync_point_vec_push_pop() {
+    fn push(
+        world: &mut World,
+        key: crate::action::sync::SyncKey,
+        mut values: crate::tracked_value::Ref<Vec<i32>>,
+        value: i32,
+        run: &'static str,
+        undo: &'static str,
+    ) {
+        values.silent_write(&mut *world).push(value);
+        record(world, TestEvent::Ran(run));
+
+        synced_rewind(world, [key], move |world| {
+            let popped = values.silent_write(&mut *world).pop();
+            expect_eq!(popped, Some(value));
+            record(world, TestEvent::Ran(undo));
+        });
+    }
+
+    let mut app = testing_app();
+    let world = app.world_mut();
+
+    let key = create_sync_key(world);
+    let values = create_ref(world, Vec::<i32>::new());
+
+    test_eval(world, move |world| {
+        record(world, TestEvent::Ran("root"));
+        let mut count = create_ref(world, 0);
+
+        action(world, move |world| {
+            push(world, key, values, 100, "prefix", "undo prefix");
+        });
+
+        action(world, move |world| {
+            let value = *count.read(&mut *world);
+            record(world, TestEvent::Read(value));
+
+            crate::action::sync::sync_point(world, [key]);
+
+            expect_eq!(values.silent_read(&mut *world).as_slice(), &[100],);
+            record(world, TestEvent::Ran("synced read"));
+        });
+
+        action(world, move |world| {
+            let value = *count.silent_read(&mut *world);
+            push(world, key, values, value, "middle", "undo middle");
+
+            action(world, move |world| {
+                push(world, key, values, value + 10, "child", "undo child");
+            });
+        });
+
+        action(world, move |world| {
+            push(world, key, values, 99, "tail", "undo tail");
+        });
+
+        action(world, move |world| {
+            let value = *count.read(&mut *world);
+
+            expect_eq!(
+                values.silent_read(&mut *world).as_slice(),
+                &[100, value, value + 10, 99],
+            );
+
+            if value < 2 {
+                *count.write(&mut *world) = value + 1;
+                record(world, TestEvent::Ran("increment"));
+            } else {
+                record(world, TestEvent::Ran("done"));
+            }
+        });
+    });
+
+    let mut expected = vec![
+        TestEvent::Ran("root"),
+        TestEvent::Ran("prefix"),
+        TestEvent::Read(0),
+        TestEvent::Ran("synced read"),
+        TestEvent::Ran("middle"),
+        TestEvent::Ran("child"),
+        TestEvent::Ran("tail"),
+    ];
+
+    for value in 1..=2 {
+        expected.extend([
+            TestEvent::Ran("increment"),
+            TestEvent::Read(value),
+            TestEvent::Ran("undo tail"),
+            TestEvent::Ran("undo child"),
+            TestEvent::Ran("undo middle"),
+            TestEvent::Ran("synced read"),
+            TestEvent::Ran("middle"),
+            TestEvent::Ran("child"),
+            TestEvent::Ran("tail"),
+        ]);
+    }
+
+    expected.push(TestEvent::Ran("done"));
+    expect_trace(world, &expected);
+
+    expect_eq!(values.silent_read(world).as_slice(), &[100, 2, 12, 99],);
+}
+
+#[gtest]
+fn test_nested_sync_point_vec_push_pop() {
+    fn push(
+        world: &mut World,
+        key: crate::action::sync::SyncKey,
+        mut values: crate::tracked_value::Ref<Vec<i32>>,
+        value: i32,
+        run: &'static str,
+        undo: &'static str,
+    ) {
+        values.silent_write(&mut *world).push(value);
+        record(world, TestEvent::Ran(run));
+
+        synced_rewind(world, [key], move |world| {
+            let popped = values.silent_write(&mut *world).pop();
+            expect_eq!(popped, Some(value));
+            record(world, TestEvent::Ran(undo));
+        });
+    }
+
+    let mut app = testing_app();
+    let world = app.world_mut();
+
+    let key = create_sync_key(world);
+    let values = create_ref(world, Vec::<i32>::new());
+
+    test_eval(world, move |world| {
+        record(world, TestEvent::Ran("root"));
+        let mut count = create_ref(world, 0);
+
+        action(world, move |world| {
+            push(world, key, values, 100, "prefix", "undo prefix");
+        });
+
+        action(world, move |world| {
+            let value = *count.read(&mut *world);
+            record(world, TestEvent::Read(value));
+
+            action(world, move |world| {
+                record(world, TestEvent::Ran("nested"));
+
+                crate::action::sync::sync_point(world, [key]);
+
+                expect_eq!(values.silent_read(&mut *world).as_slice(), &[100],);
+                record(world, TestEvent::Ran("synced read"));
+            });
+
+            record(world, TestEvent::Ran("parent continued"));
+        });
+
+        action(world, move |world| {
+            let value = *count.silent_read(&mut *world);
+            push(world, key, values, value, "middle", "undo middle");
+
+            action(world, move |world| {
+                push(world, key, values, value + 10, "child", "undo child");
+            });
+        });
+
+        action(world, move |world| {
+            push(world, key, values, 99, "tail", "undo tail");
+        });
+
+        action(world, move |world| {
+            let value = *count.read(&mut *world);
+
+            expect_eq!(
+                values.silent_read(&mut *world).as_slice(),
+                &[100, value, value + 10, 99],
+            );
+
+            if value < 2 {
+                *count.write(&mut *world) = value + 1;
+                record(world, TestEvent::Ran("increment"));
+            } else {
+                record(world, TestEvent::Ran("done"));
+            }
+        });
+    });
+
+    let mut expected = vec![
+        TestEvent::Ran("root"),
+        TestEvent::Ran("prefix"),
+        TestEvent::Read(0),
+        TestEvent::Ran("nested"),
+        TestEvent::Ran("synced read"),
+        TestEvent::Ran("parent continued"),
+        TestEvent::Ran("middle"),
+        TestEvent::Ran("child"),
+        TestEvent::Ran("tail"),
+    ];
+
+    for value in 1..=2 {
+        expected.extend([
+            TestEvent::Ran("increment"),
+            TestEvent::Read(value),
+            TestEvent::Ran("nested"),
+            TestEvent::Ran("undo tail"),
+            TestEvent::Ran("undo child"),
+            TestEvent::Ran("undo middle"),
+            TestEvent::Ran("synced read"),
+            TestEvent::Ran("parent continued"),
+            TestEvent::Ran("middle"),
+            TestEvent::Ran("child"),
+            TestEvent::Ran("tail"),
+        ]);
+    }
+
+    expected.push(TestEvent::Ran("done"));
+    expect_trace(world, &expected);
+
+    expect_eq!(values.silent_read(world).as_slice(), &[100, 2, 12, 99],);
+}
+
+#[gtest]
+fn test_nested_sync_point_with_parent_synced_write() {
+    fn push(
+        world: &mut World,
+        key: crate::action::sync::SyncKey,
+        mut values: crate::tracked_value::Ref<Vec<i32>>,
+        value: i32,
+        run: &'static str,
+        undo: &'static str,
+    ) {
+        values.silent_write(&mut *world).push(value);
+        record(world, TestEvent::Ran(run));
+
+        synced_rewind(world, [key], move |world| {
+            let popped = values.silent_write(&mut *world).pop();
+            expect_eq!(popped, Some(value));
+            record(world, TestEvent::Ran(undo));
+        });
+    }
+
+    let mut app = testing_app();
+    let world = app.world_mut();
+
+    let key = create_sync_key(world);
+    let values = create_ref(world, Vec::<i32>::new());
+
+    test_eval(world, move |world| {
+        record(world, TestEvent::Ran("root"));
+        let mut count = create_ref(world, 0);
+
+        action(world, move |world| {
+            push(world, key, values, 100, "prefix", "undo prefix");
+        });
+
+        action(world, move |world| {
+            let value = *count.read(&mut *world);
+            record(world, TestEvent::Read(value));
+
+            action(world, move |world| {
+                record(world, TestEvent::Ran("nested"));
+
+                crate::action::sync::sync_point(world, [key]);
+
+                expect_eq!(values.silent_read(&mut *world).as_slice(), &[100],);
+                record(world, TestEvent::Ran("synced read"));
+            });
+
+            push(
+                world,
+                key,
+                values,
+                value + 20,
+                "parent push",
+                "undo parent push",
+            );
+        });
+
+        action(world, move |world| {
+            let value = *count.silent_read(&mut *world);
+            push(world, key, values, value, "middle", "undo middle");
+
+            action(world, move |world| {
+                push(world, key, values, value + 10, "child", "undo child");
+            });
+        });
+
+        action(world, move |world| {
+            push(world, key, values, 99, "tail", "undo tail");
+        });
+
+        action(world, move |world| {
+            let value = *count.read(&mut *world);
+
+            expect_eq!(
+                values.silent_read(&mut *world).as_slice(),
+                &[100, value + 20, value, value + 10, 99],
+            );
+
+            if value < 2 {
+                *count.write(&mut *world) = value + 1;
+                record(world, TestEvent::Ran("increment"));
+            } else {
+                record(world, TestEvent::Ran("done"));
+            }
+        });
+    });
+
+    let mut expected = vec![
+        TestEvent::Ran("root"),
+        TestEvent::Ran("prefix"),
+        TestEvent::Read(0),
+        TestEvent::Ran("nested"),
+        TestEvent::Ran("synced read"),
+        TestEvent::Ran("parent push"),
+        TestEvent::Ran("middle"),
+        TestEvent::Ran("child"),
+        TestEvent::Ran("tail"),
+    ];
+
+    for value in 1..=2 {
+        expected.extend([
+            TestEvent::Ran("increment"),
+            TestEvent::Ran("undo tail"),
+            TestEvent::Ran("undo child"),
+            TestEvent::Ran("undo middle"),
+            TestEvent::Ran("undo parent push"),
+            TestEvent::Read(value),
+            TestEvent::Ran("nested"),
+            TestEvent::Ran("synced read"),
+            TestEvent::Ran("parent push"),
+            TestEvent::Ran("middle"),
+            TestEvent::Ran("child"),
+            TestEvent::Ran("tail"),
+        ]);
+    }
+
+    expected.push(TestEvent::Ran("done"));
+    expect_trace(world, &expected);
+
+    expect_eq!(values.silent_read(world).as_slice(), &[100, 22, 2, 12, 99],);
+}
