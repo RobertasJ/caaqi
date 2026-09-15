@@ -179,6 +179,7 @@ fn test_single_rewind() {
 
             rewind(world, move |world| {
                 *rewind_run_count.silent_write(&mut *world) += 1;
+                expect_eq!(*read_run_count.silent_read(&mut *world), 1);
                 println!("rewound");
             });
         });
@@ -224,6 +225,8 @@ fn test_synced_rewinds() {
             }
 
             synced_rewind(world, [sync_key], move |world| {
+                expect_eq!(*rewind2_run_count.silent_read(&mut *world), 1);
+
                 *rewind1_run_count.silent_write(&mut *world) += 1;
                 println!("rewound 1");
             });
@@ -231,6 +234,7 @@ fn test_synced_rewinds() {
 
         action(world, move |world| {
             synced_rewind(world, [sync_key], move |world| {
+                expect_eq!(*rewind1_run_count.silent_read(&mut *world), 0);
                 *rewind2_run_count.silent_write(&mut *world) += 1;
                 println!("rewound 2");
             });
