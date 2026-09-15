@@ -21,7 +21,7 @@ pub fn sync_key(world: &mut World) -> SyncKey {
     let key = create_sync_key(world);
 
     rewind(world, move |world| {
-        remove_sync_key(world, key);
+        drop_sync_key(world, key);
     });
 
     key
@@ -37,7 +37,7 @@ pub fn create_sync_key(world: &mut World) -> SyncKey {
     key
 }
 
-pub fn remove_sync_key(world: &mut World, key: SyncKey) {
+pub fn drop_sync_key(world: &mut World, key: SyncKey) {
     let remaining = world.resource_mut::<SyncKeyToActions>().0.remove(&key);
 
     debug_assert!(

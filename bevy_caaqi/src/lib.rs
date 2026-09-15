@@ -1,4 +1,5 @@
 pub mod action;
+pub mod synced_value;
 pub mod tracked_value;
 
 use bevy::prelude::*;
