@@ -27,7 +27,15 @@ fn queue_eval(commands: Commands) {
         let mut numbers = synced_ref(world, vec![]);
 
         action(world, move |world| {
-            numbers.write(world).push(1);
+            if *count.read(&mut *world) != 4 {
+                action(world, move |world| {
+                    numbers.write(world).push(1);
+                });
+            }
+        });
+
+        action(world, move |world| {
+            println!("state of numbers: {:?}", *numbers.read(world));
         });
 
         action(world, move |world| {
@@ -36,15 +44,13 @@ fn queue_eval(commands: Commands) {
         });
 
         action(world, move |world| {
-            println!("state of numbers: {:?}", *numbers.read(world));
-        });
-
-        action(world, move |world| {
             numbers.write(world).push(69);
+            let read = numbers.read(world);
+            println!("state of numbers end: {:?}", *read);
         });
 
         action(world, move |world| {
-            if *count.read(&mut *world) < 3 {
+            if *count.read(&mut *world) < 5 {
                 *count.write(world) += 1;
             }
         });
