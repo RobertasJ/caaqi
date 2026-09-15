@@ -10,8 +10,8 @@ use bevy_caaqi::{
         context_builder::{action, defer_action_eval, synced_rewind},
         sync::{sync_key, sync_point},
     },
-    synced_value::synced_ref,
     tracked_value::ref_,
+    var::var,
 };
 
 fn main() {
@@ -24,7 +24,7 @@ fn main() {
 fn queue_eval(commands: Commands) {
     defer_action_eval(commands, move |world| {
         let mut count = ref_(world, 0);
-        let mut numbers = synced_ref(world, vec![]);
+        let mut numbers = var(world, vec![]);
 
         action(world, move |world| {
             if *count.read(&mut *world) != 4 {

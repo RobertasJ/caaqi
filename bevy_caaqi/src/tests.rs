@@ -7,8 +7,8 @@ use crate::{
         context_builder::{action, defer_action_eval, rewind, synced_rewind},
         sync::create_sync_key,
     },
-    synced_value::synced_ref,
-    tracked_value::{create_ref, ref_action},
+    tracked_value::{create_ref, ref_, ref_action},
+    var::var,
 };
 
 #[derive(Resource, Default)]
@@ -1081,7 +1081,7 @@ fn test_synced_ref_writer_stops_writing() {
 
     test_eval(world, move |world| {
         let mut enabled = create_ref(world, true);
-        let mut values = synced_ref(world, Vec::<i32>::new());
+        let mut values = var(world, Vec::<i32>::new());
 
         action(world, move |world| {
             if *enabled.read(&mut *world) {
@@ -1122,7 +1122,7 @@ fn test_synced_ref_writer_toggles() {
 
     test_eval(world, move |world| {
         let mut phase = create_ref(world, 0);
-        let mut values = synced_ref(world, vec![100]);
+        let mut values = var(world, vec![100]);
 
         action(world, move |world| {
             expect_eq!(values.read(world).as_slice(), &[100]);
@@ -1190,7 +1190,7 @@ fn test_synced_ref_multiple_writes_with_nested_action() {
 
     test_eval(world, move |world| {
         let mut phase = create_ref(world, 0);
-        let mut values = synced_ref(world, vec![100]);
+        let mut values = var(world, vec![100]);
 
         action(world, move |world| {
             let n = *phase.read(&mut *world);
@@ -1253,8 +1253,8 @@ fn test_synced_ref_independent_values() {
 
     test_eval(world, move |world| {
         let mut phase = create_ref(world, 0);
-        let mut left = synced_ref(world, Vec::<i32>::new());
-        let mut right = synced_ref(world, Vec::<i32>::new());
+        let mut left = var(world, Vec::<i32>::new());
+        let mut right = var(world, Vec::<i32>::new());
 
         action(world, move |world| {
             let n = *phase.read(&mut *world);
@@ -1319,8 +1319,8 @@ fn test_synced_ref_nested_writer_disappears_and_returns() {
     let world = app.world_mut();
 
     test_eval(world, move |world| {
-        let mut count = crate::tracked_value::ref_(world, 0);
-        let mut numbers = crate::synced_value::synced_ref(world, vec![]);
+        let mut count = ref_(world, 0);
+        let mut numbers = var(world, vec![]);
 
         action(world, move |world| {
             if *count.read(&mut *world) != 4 {

@@ -3,10 +3,12 @@ use bevy::{ecs::world::DeferredWorld, prelude::*};
 use bevy_caaqi::{
     CaaqiPlugin,
     action::{
-        context_builder::{action, defer_action_eval, rewind},
+        context_builder::{action, defer_action_eval, rewind, synced_rewind},
         execute::{ExecuteActionTrees, FlushWrites},
+        sync::{SyncKey, sync_key},
     },
     tracked_value::{Ref, ref_},
+    var::{Var, var},
 };
 
 fn main() {
@@ -37,7 +39,7 @@ fn setup_ui(mut commands: Commands) {
             }
         });
 
-        for _ in 0..5 {
+        action(world, move |world| {
             let mut child = NodeMutator::new(world);
             root_node.add_child(world, child);
 
@@ -51,7 +53,7 @@ fn setup_ui(mut commands: Commands) {
                     child.set_color(&mut *world, Color::hsl(100.0, 0.9, 0.5));
                 }
             });
-        }
+        });
 
         action(world, move |world| {
             if *root_node.is_hovered.read(&mut *world) {
@@ -68,13 +70,31 @@ fn setup_ui(mut commands: Commands) {
                 long_child.set_color(&mut *world, Color::hsl(300.0, 0.9, 0.5));
             }
         });
+
+        for _ in 0..5 {
+            action(world, move |world| {
+                let mut child = NodeMutator::new(world);
+                root_node.add_child(world, child);
+
+                child.set_width(world, 100.0);
+                child.set_height(world, 100.0);
+
+                action(world, move |world| {
+                    if *child.is_hovered.read(&mut *world) {
+                        child.set_color(&mut *world, Color::hsl(100.0, 0.9, 0.8));
+                    } else {
+                        child.set_color(&mut *world, Color::hsl(100.0, 0.9, 0.5));
+                    }
+                });
+            });
+        }
     });
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NodeMutator {
     node_entity: Entity,
-    children: Ref<Vec<NodeMutator>>,
+    sync_key: SyncKey,
     is_hovered: Ref<bool>,
 }
 
@@ -90,13 +110,11 @@ impl NodeMutator {
             world.entity_mut(node_entity).despawn();
         });
 
-        let children = ref_(world, Vec::new());
-
         let mut is_hovered = ref_(world, false);
 
         let mut self_ = Self {
             node_entity,
-            children,
+            sync_key: sync_key(world),
             is_hovered,
         };
 
@@ -141,7 +159,12 @@ impl NodeMutator {
             .entity_mut(self.node_entity)
             .add_child(child.node_entity);
 
-        self.children.write(world).push(child);
+        let self_ = *self;
+        synced_rewind(world, [self.sync_key], move |world| {
+            world
+                .entity_mut(self_.node_entity)
+                .detach_child(child.node_entity);
+        });
 
         child
     }

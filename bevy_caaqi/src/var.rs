@@ -9,12 +9,12 @@ use crate::{
 };
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct SyncedRef<T: Clone + Send + Sync + 'static> {
+pub struct Var<T: Clone + Send + Sync + 'static> {
     ref_: Ref<T>,
     sync_key: SyncKey,
 }
 
-impl<T: Clone + Send + Sync + 'static> Clone for SyncedRef<T> {
+impl<T: Clone + Send + Sync + 'static> Clone for Var<T> {
     fn clone(&self) -> Self {
         Self {
             ref_: self.ref_.clone(),
@@ -23,39 +23,33 @@ impl<T: Clone + Send + Sync + 'static> Clone for SyncedRef<T> {
     }
 }
 
-impl<T: Clone + Send + Sync + 'static> Copy for SyncedRef<T> {}
+impl<T: Clone + Send + Sync + 'static> Copy for Var<T> {}
 
-pub fn create_synced_ref<T: Clone + Send + Sync + 'static>(
-    world: &mut World,
-    value: T,
-) -> SyncedRef<T> {
+pub fn create_var<T: Clone + Send + Sync + 'static>(world: &mut World, value: T) -> Var<T> {
     let sync_key = create_sync_key(world);
     let ref_ = create_ref(world, value);
 
-    SyncedRef { ref_, sync_key }
+    Var { ref_, sync_key }
 }
 
-pub fn drop_synced_ref<T: Clone + Send + Sync + 'static>(
-    world: &mut World,
-    tracked_ref: SyncedRef<T>,
-) {
-    let SyncedRef { ref_, sync_key } = tracked_ref;
+pub fn drop_var<T: Clone + Send + Sync + 'static>(world: &mut World, var: Var<T>) {
+    let Var { ref_, sync_key } = var;
 
     drop_ref(world, ref_);
     drop_sync_key(world, sync_key);
 }
 
-pub fn synced_ref<T: Clone + Send + Sync + 'static>(world: &mut World, value: T) -> SyncedRef<T> {
-    let synced_ref = create_synced_ref(world, value);
+pub fn var<T: Clone + Send + Sync + 'static>(world: &mut World, value: T) -> Var<T> {
+    let synced_ref = create_var(world, value);
 
     rewind(world, move |world| {
-        drop_synced_ref(world, synced_ref);
+        drop_var(world, synced_ref);
     });
 
     synced_ref
 }
 
-impl<T: Clone + Send + Sync + 'static> SyncedRef<T> {
+impl<T: Clone + Send + Sync + 'static> Var<T> {
     #[track_caller]
     pub fn read(&self, world: &mut World) -> ReadRef<T> {
         sync_point(world, [self.sync_key]);
