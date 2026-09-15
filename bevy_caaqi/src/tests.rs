@@ -7,7 +7,7 @@ use crate::{
         context_builder::{action, defer_action_eval, rewind, synced_rewind},
         sync::create_sync_key,
     },
-    tracked_value::create_ref,
+    tracked_value::{create_ref, ref_action},
 };
 
 #[derive(Resource, Default)]
@@ -227,6 +227,302 @@ fn test_synced_rewinds() {
             TestEvent::Ran("rewound action 1"),
             TestEvent::Read(1),
             TestEvent::Ran("ran action 2"),
+        ],
+    );
+}
+
+#[gtest]
+fn test_increment_until_above_three() {
+    let mut app = testing_app();
+    let world = app.world_mut();
+
+    test_eval(world, move |world| {
+        let mut count = create_ref(world, 0);
+
+        action(world, move |world| {
+            let value = *count.read(&mut *world);
+            record(world, TestEvent::Read(value));
+        });
+
+        action(world, move |world| {
+            if *count.read(&mut *world) <= 3 {
+                *count.write(&mut *world) += 1;
+                record(world, TestEvent::Ran("increment"));
+            } else {
+                record(world, TestEvent::Ran("done"));
+            }
+        });
+    });
+
+    expect_trace(
+        world,
+        &[
+            TestEvent::Read(0),
+            TestEvent::Ran("increment"),
+            TestEvent::Read(1),
+            TestEvent::Ran("increment"),
+            TestEvent::Read(2),
+            TestEvent::Ran("increment"),
+            TestEvent::Read(3),
+            TestEvent::Ran("increment"),
+            TestEvent::Read(4),
+            TestEvent::Ran("done"),
+        ],
+    );
+}
+
+#[gtest]
+fn test_nested_rewinds() {
+    let mut app = testing_app();
+    let world = app.world_mut();
+
+    test_eval(world, move |world| {
+        record(world, TestEvent::Ran("root"));
+        let mut count = create_ref(world, 0);
+
+        action(world, move |world| {
+            let value = *count.read(&mut *world);
+            record(world, TestEvent::Read(value));
+
+            rewind(world, move |world| {
+                record(world, TestEvent::Ran("rewind 1"));
+            });
+            rewind(world, move |world| {
+                record(world, TestEvent::Ran("rewind 2"));
+            });
+
+            action(world, move |world| {
+                record(world, TestEvent::Ran("nested"));
+
+                rewind(world, move |world| {
+                    record(world, TestEvent::Ran("rewind 3"));
+                });
+                rewind(world, move |world| {
+                    record(world, TestEvent::Ran("rewind 4"));
+                });
+
+                action(world, move |world| {
+                    record(world, TestEvent::Ran("deep"));
+
+                    rewind(world, move |world| {
+                        record(world, TestEvent::Ran("rewind 5"));
+                    });
+                    rewind(world, move |world| {
+                        record(world, TestEvent::Ran("rewind 6"));
+                    });
+                });
+
+                rewind(world, move |world| {
+                    record(world, TestEvent::Ran("rewind 7"));
+                });
+            });
+
+            rewind(world, move |world| {
+                record(world, TestEvent::Ran("rewind 8"));
+            });
+            rewind(world, move |world| {
+                record(world, TestEvent::Ran("rewind 9"));
+            });
+        });
+
+        action(world, move |world| {
+            *count.write(&mut *world) = 1;
+            record(world, TestEvent::Ran("write"));
+        });
+    });
+
+    expect_trace(
+        world,
+        &[
+            TestEvent::Ran("root"),
+            TestEvent::Read(0),
+            TestEvent::Ran("nested"),
+            TestEvent::Ran("deep"),
+            TestEvent::Ran("write"),
+            TestEvent::Ran("rewind 9"),
+            TestEvent::Ran("rewind 8"),
+            TestEvent::Ran("rewind 7"),
+            TestEvent::Ran("rewind 6"),
+            TestEvent::Ran("rewind 5"),
+            TestEvent::Ran("rewind 4"),
+            TestEvent::Ran("rewind 3"),
+            TestEvent::Ran("rewind 2"),
+            TestEvent::Ran("rewind 1"),
+            TestEvent::Read(1),
+            TestEvent::Ran("nested"),
+            TestEvent::Ran("deep"),
+        ],
+    );
+}
+
+fn traced_synced_action(
+    world: &mut World,
+    keys: Vec<crate::action::sync::SyncKey>,
+    run_label: &'static str,
+    rewind_label: &'static str,
+) {
+    action(world, move |world| {
+        record(world, TestEvent::Ran(run_label));
+
+        synced_rewind(world, keys.iter().copied(), move |world| {
+            record(world, TestEvent::Ran(rewind_label));
+        });
+    });
+}
+
+#[gtest]
+fn test_synced_rewind_branches() {
+    let mut app = testing_app();
+    let world = app.world_mut();
+
+    let read_a = create_sync_key(world);
+    let a_b = create_sync_key(world);
+    let b_left = create_sync_key(world);
+    let b_right = create_sync_key(world);
+    let left_tail = create_sync_key(world);
+    let right_tail = create_sync_key(world);
+    let unrelated = create_sync_key(world);
+
+    test_eval(world, move |world| {
+        record(world, TestEvent::Ran("root"));
+        let mut count = create_ref(world, 0);
+
+        action(world, move |world| {
+            let value = *count.read(&mut *world);
+            record(world, TestEvent::Read(value));
+
+            synced_rewind(world, [read_a], move |world| {
+                record(world, TestEvent::Ran("undo read"));
+            });
+        });
+
+        traced_synced_action(world, vec![unrelated], "unrelated 1", "undo unrelated 1");
+
+        traced_synced_action(world, vec![read_a, a_b], "a", "undo a");
+        traced_synced_action(world, vec![a_b, b_left, b_right], "b", "undo b");
+        traced_synced_action(world, vec![b_left, left_tail], "left", "undo left");
+
+        action(world, move |world| {
+            record(world, TestEvent::Ran("independent"));
+
+            rewind(world, move |world| {
+                record(world, TestEvent::Ran("undo independent"));
+            });
+        });
+
+        traced_synced_action(world, vec![left_tail], "left tail", "undo left tail");
+        traced_synced_action(world, vec![b_right, right_tail], "right", "undo right");
+
+        traced_synced_action(world, vec![unrelated], "unrelated 2", "undo unrelated 2");
+
+        traced_synced_action(world, vec![right_tail], "right tail", "undo right tail");
+
+        action(world, move |world| {
+            *count.write(&mut *world) = 1;
+            record(world, TestEvent::Ran("write"));
+        });
+    });
+
+    expect_trace(
+        world,
+        &[
+            TestEvent::Ran("root"),
+            TestEvent::Read(0),
+            TestEvent::Ran("unrelated 1"),
+            TestEvent::Ran("a"),
+            TestEvent::Ran("b"),
+            TestEvent::Ran("left"),
+            TestEvent::Ran("independent"),
+            TestEvent::Ran("left tail"),
+            TestEvent::Ran("right"),
+            TestEvent::Ran("unrelated 2"),
+            TestEvent::Ran("right tail"),
+            TestEvent::Ran("write"),
+            TestEvent::Ran("undo right tail"),
+            TestEvent::Ran("undo right"),
+            TestEvent::Ran("undo left tail"),
+            TestEvent::Ran("undo left"),
+            TestEvent::Ran("undo b"),
+            TestEvent::Ran("undo a"),
+            TestEvent::Ran("undo read"),
+            TestEvent::Read(1),
+            TestEvent::Ran("a"),
+            TestEvent::Ran("b"),
+            TestEvent::Ran("left"),
+            TestEvent::Ran("left tail"),
+            TestEvent::Ran("right"),
+            TestEvent::Ran("right tail"),
+        ],
+    );
+}
+
+#[gtest]
+fn test_synced_join_then_split() {
+    let mut app = testing_app();
+    let world = app.world_mut();
+
+    let start = create_sync_key(world);
+    let left_join = create_sync_key(world);
+    let right_join = create_sync_key(world);
+    let finish = create_sync_key(world);
+
+    test_eval(world, move |world| {
+        record(world, TestEvent::Ran("root"));
+        let mut count = create_ref(world, 0);
+
+        action(world, move |world| {
+            let value = *count.read(&mut *world);
+            record(world, TestEvent::Read(value));
+
+            synced_rewind(world, [start], move |world| {
+                record(world, TestEvent::Ran("undo read"));
+            });
+        });
+
+        traced_synced_action(world, vec![start, left_join], "left", "undo left");
+        traced_synced_action(world, vec![start, right_join], "right", "undo right");
+
+        traced_synced_action(world, vec![], "unrelated", "undo unrelated");
+
+        traced_synced_action(
+            world,
+            vec![left_join, right_join, finish],
+            "join",
+            "undo join",
+        );
+        traced_synced_action(world, vec![finish], "end 1", "undo end 1");
+        traced_synced_action(world, vec![finish], "end 2", "undo end 2");
+
+        action(world, move |world| {
+            *count.write(&mut *world) = 1;
+            record(world, TestEvent::Ran("write"));
+        });
+    });
+
+    expect_trace(
+        world,
+        &[
+            TestEvent::Ran("root"),
+            TestEvent::Read(0),
+            TestEvent::Ran("left"),
+            TestEvent::Ran("right"),
+            TestEvent::Ran("unrelated"),
+            TestEvent::Ran("join"),
+            TestEvent::Ran("end 1"),
+            TestEvent::Ran("end 2"),
+            TestEvent::Ran("write"),
+            TestEvent::Ran("undo end 2"),
+            TestEvent::Ran("undo end 1"),
+            TestEvent::Ran("undo join"),
+            TestEvent::Ran("undo right"),
+            TestEvent::Ran("undo left"),
+            TestEvent::Ran("undo read"),
+            TestEvent::Read(1),
+            TestEvent::Ran("left"),
+            TestEvent::Ran("right"),
+            TestEvent::Ran("join"),
+            TestEvent::Ran("end 1"),
+            TestEvent::Ran("end 2"),
         ],
     );
 }
