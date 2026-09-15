@@ -135,15 +135,11 @@ pub fn rewind_action(world: &mut World, node: Entity, tree_root: Entity) {
     );
 
     let mut to_rewind = HashSet::<Entity>::new();
-    let mut children_query = world.query_filtered::<(&Children, &SyncedWith), With<ActionNode>>();
-    let action_nodes =
-        unsafe { children_query.query_unchecked(world.as_unsafe_world_cell_readonly()) };
     let sync_key_to_actions = world.resource::<SyncKeyToActions>();
     let tree_order = TreeOrder::new(world, tree_root);
 
     fn rec(
         world: &World,
-        action_nodes: Query<'_, '_, (&Children, &SyncedWith), With<ActionNode>>,
         node: Entity,
         to_rewind: &mut HashSet<Entity>,
         sync_key_to_actions: &SyncKeyToActions,
@@ -173,14 +169,14 @@ pub fn rewind_action(world: &mut World, node: Entity, tree_root: Entity) {
         let mut stack = vec![node];
 
         while let Some(current) = stack.pop() {
-            let Ok((children, synced_with)) = action_nodes.get(current) else {
-                continue;
-            };
-            sync_keys.extend(synced_with.0.iter().copied());
+            if let Some(synced_with) = world.get::<SyncedWith>(current) {
+                sync_keys.extend(synced_with.0.iter().copied());
+            }
 
-            stack.extend(children.iter());
+            if let Some(children) = world.get::<Children>(current) {
+                stack.extend(children.iter());
+            }
         }
-
         for sync_key in sync_keys {
             debug!(
                 "[rewind_action] Finding synced nodes for node {:?} at {} with SyncKey {:?}",
@@ -229,14 +225,7 @@ pub fn rewind_action(world: &mut World, node: Entity, tree_root: Entity) {
                             .unwrap_or("Not Given".to_string()),
                         sync_key,
                     );
-                    rec(
-                        world,
-                        action_nodes,
-                        tree_node,
-                        to_rewind,
-                        sync_key_to_actions,
-                        tree_order,
-                    );
+                    rec(world, tree_node, to_rewind, sync_key_to_actions, tree_order);
                 }
             }
         }
@@ -252,7 +241,6 @@ pub fn rewind_action(world: &mut World, node: Entity, tree_root: Entity) {
     );
     rec(
         world,
-        action_nodes,
         node,
         &mut to_rewind,
         sync_key_to_actions,

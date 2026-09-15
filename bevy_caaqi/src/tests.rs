@@ -1305,3 +1305,80 @@ fn test_synced_ref_independent_values() {
         ],
     );
 }
+
+#[gtest]
+fn test_synced_ref_nested_writer_disappears_and_returns() {
+    #[derive(Resource, Default)]
+    struct Snapshots {
+        prefix: Vec<Vec<i32>>,
+        end: Vec<Vec<i32>>,
+    }
+
+    let mut app = testing_app();
+    app.init_resource::<Snapshots>();
+    let world = app.world_mut();
+
+    test_eval(world, move |world| {
+        let mut count = crate::tracked_value::ref_(world, 0);
+        let mut numbers = crate::synced_value::synced_ref(world, vec![]);
+
+        action(world, move |world| {
+            if *count.read(&mut *world) != 4 {
+                action(world, move |world| {
+                    numbers.write(world).push(1);
+                });
+            }
+        });
+
+        action(world, move |world| {
+            let snapshot = numbers.read(world).to_vec();
+            world.resource_mut::<Snapshots>().prefix.push(snapshot);
+            record(world, TestEvent::Ran("prefix"));
+        });
+
+        action(world, move |world| {
+            let read = count.read(&mut *world);
+            numbers.write(world).push(*read);
+        });
+
+        action(world, move |world| {
+            numbers.write(world).push(69);
+
+            let snapshot = numbers.read(world).to_vec();
+            world.resource_mut::<Snapshots>().end.push(snapshot);
+            record(world, TestEvent::Ran("end"));
+        });
+
+        action(world, move |world| {
+            if *count.read(&mut *world) < 5 {
+                *count.write(world) += 1;
+            }
+        });
+    });
+
+    let snapshots = world.resource::<Snapshots>();
+
+    expect_eq!(
+        &snapshots.prefix,
+        &vec![vec![1], vec![1], vec![1], vec![1], vec![], vec![1],],
+    );
+
+    expect_eq!(
+        &snapshots.end,
+        &vec![
+            vec![1, 0, 69],
+            vec![1, 1, 69],
+            vec![1, 2, 69],
+            vec![1, 3, 69],
+            vec![4, 69],
+            vec![1, 5, 69],
+        ],
+    );
+
+    let mut expected = vec![];
+    for _ in 0..=5 {
+        expected.extend([TestEvent::Ran("prefix"), TestEvent::Ran("end")]);
+    }
+
+    expect_trace(world, &expected);
+}
