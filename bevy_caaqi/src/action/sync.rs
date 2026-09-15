@@ -4,7 +4,11 @@ use bevy::{
     prelude::{Deref, DerefMut},
 };
 
-use crate::action::context_builder::rewind;
+use crate::action::{
+    context_builder::rewind,
+    execute::{ExecutionRoot, TreeRoot, rewind_action},
+    node::SyncedWith,
+};
 
 #[derive(Debug, Deref, PartialEq, Eq, Hash, Clone, Copy)]
 pub struct SyncKey(pub Entity);
@@ -41,4 +45,18 @@ pub fn remove_sync_key(world: &mut World, key: SyncKey) {
     );
 
     world.despawn(key.0);
+}
+
+pub fn sync_point(world: &mut World, keys: impl IntoIterator<Item = SyncKey>) {
+    let ExecutionRoot(execution_root) = *world.resource::<ExecutionRoot>();
+
+    world
+        .entity_mut(execution_root)
+        .insert(SyncedWith(keys.into_iter().collect()));
+
+    let TreeRoot(tree_root) = *world.resource::<TreeRoot>();
+
+    rewind_action(world, execution_root, tree_root);
+
+    world.entity_mut(execution_root).remove::<SyncedWith>();
 }

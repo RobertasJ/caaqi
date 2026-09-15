@@ -14,6 +14,7 @@ use bevy::{
         entity::Entity,
         hierarchy::{ChildOf, Children},
         query::{QueryState, With, Without},
+        resource::Resource,
         system::Command,
         world::World,
     },
@@ -22,6 +23,15 @@ use bevy::{
 use caaqi_context::{Attached, Scope};
 
 use crate::action::node::ActionNode;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Resource)]
+pub struct RunningAction(pub Entity);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Resource)]
+pub struct TreeRoot(pub Entity);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Resource)]
+pub struct ExecutionRoot(pub Entity);
 
 pub struct ExecuteActionTrees;
 
@@ -53,7 +63,12 @@ impl Command for ExecuteActionTrees {
                             .unwrap_or("Not Given".to_string()),
                     );
                 }
+
+                world.insert_resource(ExecutionRoot(node));
+
                 run_action_node(world, node);
+
+                world.remove_resource::<ExecutionRoot>();
             } else {
                 let children = tree_query_state
                     .query(world)
@@ -69,7 +84,11 @@ impl Command for ExecuteActionTrees {
 
         let mut tree_query_state = world.query_filtered::<&Children, With<ActionNode>>();
         for root in root_nodes {
+            world.insert_resource(TreeRoot(root));
+
             traverse_tree(root, root, world, &mut tree_query_state);
+
+            world.remove_resource::<TreeRoot>();
         }
 
         let nodes_to_rerun = world
@@ -106,7 +125,7 @@ impl Command for FlushWrites {
     }
 }
 
-fn rewind_action(world: &mut World, node: Entity, tree_root: Entity) {
+pub fn rewind_action(world: &mut World, node: Entity, tree_root: Entity) {
     debug!(
         "[rewind_action] Rewinding node {:?} at {}",
         node,
@@ -293,6 +312,9 @@ fn rewind_action(world: &mut World, node: Entity, tree_root: Entity) {
 }
 
 pub fn run_action_node(world: &mut World, node: Entity) {
+    let parent_action = world.remove_resource::<RunningAction>();
+    world.insert_resource(RunningAction(node));
+
     let mut action_node = if let Some(action_node) = world.entity_mut(node).take::<ActionNode>() {
         action_node
     } else {
@@ -353,6 +375,11 @@ pub fn run_action_node(world: &mut World, node: Entity) {
     entity_mut.remove::<Rewound>();
 
     flush_tracked_writes(world);
+
+    world.remove_resource::<RunningAction>();
+    if let Some(parent) = parent_action {
+        world.insert_resource(parent);
+    }
 }
 
 pub fn flush_tracked_writes(world: &mut World) {
