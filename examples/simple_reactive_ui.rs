@@ -18,10 +18,6 @@ fn setup_ui(mut commands: Commands) {
     defer_action_eval(commands.reborrow(), move || {
         let mut root_node = NodeMutator::new();
 
-        root_node.observe(move |_ev: On<Pointer<Click>>| {
-            println!("Root node clicked!");
-        });
-
         root_node.set_width(500.0);
         root_node.set_height(600.0);
 
@@ -33,22 +29,20 @@ fn setup_ui(mut commands: Commands) {
             }
         });
 
+        let child = NodeMutator::new();
         action(move || {
-            let child = NodeMutator::new();
-            action(move || {
-                root_node.add_child(child);
-            });
+            root_node.add_child(child);
+        });
 
-            child.set_width(100.0);
-            child.set_height(100.0);
+        child.set_width(100.0);
+        child.set_height(100.0);
 
-            action(move || {
-                if *child.is_hovered.read() {
-                    child.set_color(Color::hsl(100.0, 0.9, 0.8));
-                } else {
-                    child.set_color(Color::hsl(100.0, 0.9, 0.5));
-                }
-            });
+        action(move || {
+            if *child.is_hovered.read() {
+                child.set_color(Color::hsl(100.0, 0.9, 0.8));
+            } else {
+                child.set_color(Color::hsl(100.0, 0.9, 0.5));
+            }
         });
 
         action(move || {
@@ -77,6 +71,8 @@ fn setup_ui(mut commands: Commands) {
                 action(move || {
                     root_node.add_child(child);
                 });
+
+                println!("for loop child created");
 
                 child.set_width(100.0);
                 child.set_height(100.0);
