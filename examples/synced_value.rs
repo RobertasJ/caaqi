@@ -15,7 +15,7 @@ fn main() {
 
 fn queue_eval(commands: Commands) {
     defer_action_eval(commands, move || {
-        let mut count = ref_(0);
+        let mut count = state(0);
         let mut numbers = var(vec![]);
 
         action(move || {

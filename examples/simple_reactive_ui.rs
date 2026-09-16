@@ -2,7 +2,7 @@ use bevy::{ecs::world::DeferredWorld, prelude::*};
 
 use bevy_caaqi::{
     action::execute::{ExecuteActionTrees, FlushWrites},
-    prelude::{Ref, *},
+    prelude::{State, *},
 };
 
 fn main() {
@@ -93,12 +93,12 @@ fn setup_ui(mut commands: Commands) {
     });
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct NodeMutator {
     node_entity: Entity,
     children_sync_key: SyncKey,
     state_sync_key: SyncKey,
-    is_hovered: Ref<bool>,
+    is_hovered: State<bool>,
 }
 
 impl NodeMutator {
@@ -117,7 +117,7 @@ impl NodeMutator {
             });
         });
 
-        let mut is_hovered = ref_(false);
+        let mut is_hovered = state(false);
 
         let mut self_ = Self {
             node_entity,

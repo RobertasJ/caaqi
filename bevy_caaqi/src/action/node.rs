@@ -13,7 +13,7 @@ use caaqi_context::{Attached, Scope};
 
 use crate::{
     action::sync::{SyncKey, SyncKeyToActions},
-    tracked_value::{RefNotify, RefSubscribe, RefTypeErased},
+    tracking::{Subscribe, TrackingKey},
 };
 
 #[derive(Component)]
@@ -21,7 +21,7 @@ use crate::{
 pub struct ActionNode(pub Box<dyn FnMut(&mut World) + Send + Sync + 'static>);
 
 #[derive(Component, Debug, Default, Deref, DerefMut)]
-pub struct SubscribedTo(pub HashSet<RefTypeErased>);
+pub struct SubscribedTo(pub HashSet<TrackingKey>);
 
 #[derive(Component, Debug, Default, Deref, DerefMut)]
 #[component(on_remove = Self::on_remove)]
@@ -75,7 +75,7 @@ impl ActionRewind {
             .take::<ActionRewind>()
             .expect("Node is not an ActionRewind");
 
-        let read_scope = Scope::<RefSubscribe>::new(&mut *world);
+        let read_scope = Scope::<Subscribe>::new(&mut *world);
 
         (rewind.undo)(world);
 

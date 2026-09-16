@@ -15,7 +15,7 @@ fn main() {
 
 fn queue_eval(commands: Commands) {
     defer_action_eval(commands, move || {
-        let mut count = ref_(0);
+        let mut count = state(0);
 
         // expect this to print 0, and then 10, the second print happens because of writing to count
         action(move || {

@@ -7,7 +7,7 @@ use crate::{
         context_builder::{action, defer_action_eval, rewind, synced_rewind},
         sync::create_sync_key,
     },
-    tracked_value::{create_ref, ref_, ref_action},
+    state::state,
     var::var,
 };
 
@@ -107,15 +107,15 @@ fn test_read_write() {
     let world = app.world_mut();
 
     test_eval(world, move |world| {
-        let mut val = create_ref(&mut *world, 0);
+        let mut val = state(&mut *world, 0);
 
         action(world, move |world| {
-            let read = val.read(&mut *world);
+            let read = val.read(world.into());
             record(world, TestEvent::Read(*read));
         });
 
         action(world, move |world| {
-            *val.write(&mut *world) += 1;
+            *val.write(world.into()) += 1;
             record(world, TestEvent::Ran("write"));
         });
     });
@@ -136,15 +136,15 @@ fn test_write_read() {
     let world = app.world_mut();
 
     test_eval(world, move |world| {
-        let mut val = create_ref(&mut *world, 0);
+        let mut val = state(&mut *world, 0);
 
         action(world, move |world| {
-            *val.write(&mut *world) += 1;
+            *val.write(world.into()) += 1;
             record(world, TestEvent::Ran("write"));
         });
 
         action(world, move |world| {
-            let read = val.read(&mut *world);
+            let read = val.read(world.into());
             record(world, TestEvent::Read(*read));
         });
     });
@@ -158,10 +158,10 @@ fn test_single_rewind() {
     let world = app.world_mut();
 
     test_eval(world, move |world| {
-        let mut val = create_ref(&mut *world, 0);
+        let mut val = state(&mut *world, 0);
 
         action(world, move |world| {
-            let read = val.read(&mut *world);
+            let read = val.read(world.into());
             record(world, TestEvent::Read(*read));
 
             rewind(world, move |world| {
@@ -170,7 +170,7 @@ fn test_single_rewind() {
         });
 
         action(world, move |world| {
-            *val.write(&mut *world) += 1;
+            *val.write(world.into()) += 1;
             record(world, TestEvent::Ran("wrote val"));
         });
     });
@@ -194,10 +194,10 @@ fn test_synced_rewinds() {
     let sync_key = create_sync_key(world);
 
     test_eval(world, move |world| {
-        let mut val = create_ref(&mut *world, 0);
+        let mut val = state(&mut *world, 0);
 
         action(world, move |world| {
-            let read = *val.read(&mut *world);
+            let read = *val.read(world.into());
             record(world, TestEvent::Read(read));
 
             synced_rewind(world, [sync_key], move |world| {
@@ -213,7 +213,7 @@ fn test_synced_rewinds() {
         });
 
         action(world, move |world| {
-            *val.write(&mut *world) += 1;
+            *val.write(world.into()) += 1;
             record(world, TestEvent::Ran("wrote val"));
         });
     });
@@ -238,16 +238,16 @@ fn test_increment_until_above_three() {
     let world = app.world_mut();
 
     test_eval(world, move |world| {
-        let mut count = create_ref(world, 0);
+        let mut count = state(world, 0);
 
         action(world, move |world| {
-            let value = *count.read(&mut *world);
+            let value = *count.read(world.into());
             record(world, TestEvent::Read(value));
         });
 
         action(world, move |world| {
-            if *count.read(&mut *world) <= 3 {
-                *count.write(&mut *world) += 1;
+            if *count.read(world.into()) <= 3 {
+                *count.write(world.into()) += 1;
                 record(world, TestEvent::Ran("increment"));
             } else {
                 record(world, TestEvent::Ran("done"));
@@ -279,10 +279,10 @@ fn test_nested_rewinds() {
 
     test_eval(world, move |world| {
         record(world, TestEvent::Ran("root"));
-        let mut count = create_ref(world, 0);
+        let mut count = state(world, 0);
 
         action(world, move |world| {
-            let value = *count.read(&mut *world);
+            let value = *count.read(world.into());
             record(world, TestEvent::Read(value));
 
             rewind(world, move |world| {
@@ -327,7 +327,7 @@ fn test_nested_rewinds() {
         });
 
         action(world, move |world| {
-            *count.write(&mut *world) = 1;
+            *count.write(world.into()) = 1;
             record(world, TestEvent::Ran("write"));
         });
     });
@@ -386,10 +386,10 @@ fn test_synced_rewind_branches() {
 
     test_eval(world, move |world| {
         record(world, TestEvent::Ran("root"));
-        let mut count = create_ref(world, 0);
+        let mut count = state(world, 0);
 
         action(world, move |world| {
-            let value = *count.read(&mut *world);
+            let value = *count.read(world.into());
             record(world, TestEvent::Read(value));
 
             synced_rewind(world, [read_a], move |world| {
@@ -419,7 +419,7 @@ fn test_synced_rewind_branches() {
         traced_synced_action(world, vec![right_tail], "right tail", "undo right tail");
 
         action(world, move |world| {
-            *count.write(&mut *world) = 1;
+            *count.write(world.into()) = 1;
             record(world, TestEvent::Ran("write"));
         });
     });
@@ -469,10 +469,10 @@ fn test_synced_join_then_split() {
 
     test_eval(world, move |world| {
         record(world, TestEvent::Ran("root"));
-        let mut count = create_ref(world, 0);
+        let mut count = state(world, 0);
 
         action(world, move |world| {
-            let value = *count.read(&mut *world);
+            let value = *count.read(world.into());
             record(world, TestEvent::Read(value));
 
             synced_rewind(world, [start], move |world| {
@@ -495,7 +495,7 @@ fn test_synced_join_then_split() {
         traced_synced_action(world, vec![finish], "end 2", "undo end 2");
 
         action(world, move |world| {
-            *count.write(&mut *world) = 1;
+            *count.write(world.into()) = 1;
             record(world, TestEvent::Ran("write"));
         });
     });
@@ -537,10 +537,10 @@ fn test_shared_sync_key_block() {
 
     test_eval(world, move |world| {
         record(world, TestEvent::Ran("root"));
-        let mut count = create_ref(world, 0);
+        let mut count = state(world, 0);
 
         action(world, move |world| {
-            let value = *count.read(&mut *world);
+            let value = *count.read(world.into());
             record(world, TestEvent::Read(value));
 
             synced_rewind(world, [key], move |world| {
@@ -553,7 +553,7 @@ fn test_shared_sync_key_block() {
         traced_synced_action(world, vec![key], "c", "undo c");
 
         action(world, move |world| {
-            *count.write(&mut *world) = 1;
+            *count.write(world.into()) = 1;
             record(world, TestEvent::Ran("write"));
         });
     });
@@ -588,10 +588,10 @@ fn test_repeated_synced_rewinds() {
 
     test_eval(world, move |world| {
         record(world, TestEvent::Ran("root"));
-        let mut count = create_ref(world, 0);
+        let mut count = state(world, 0);
 
         action(world, move |world| {
-            let value = *count.read(&mut *world);
+            let value = *count.read(world.into());
             record(world, TestEvent::Read(value));
 
             synced_rewind(world, [key], move |world| {
@@ -603,10 +603,10 @@ fn test_repeated_synced_rewinds() {
         traced_synced_action(world, vec![key], "b", "undo b");
 
         action(world, move |world| {
-            let value = *count.read(&mut *world);
+            let value = *count.read(world.into());
 
             if value < 4 {
-                *count.write(&mut *world) = value + 1;
+                *count.write(world.into()) = value + 1;
                 record(world, TestEvent::Ran("increment"));
             } else {
                 record(world, TestEvent::Ran("done"));
@@ -642,16 +642,16 @@ fn test_synced_vec_push_pop() {
     fn push(
         world: &mut World,
         key: crate::action::sync::SyncKey,
-        mut values: crate::tracked_value::Ref<Vec<i32>>,
+        mut values: crate::state::State<Vec<i32>>,
         value: i32,
         run: &'static str,
         undo: &'static str,
     ) {
-        values.silent_write(&mut *world).push(value);
+        values.write_silent(world.into()).push(value);
         record(world, TestEvent::Ran(run));
 
         synced_rewind(world, [key], move |world| {
-            let popped = values.silent_write(&mut *world).pop();
+            let popped = values.write_silent(world.into()).pop();
             expect_eq!(popped, Some(value));
             record(world, TestEvent::Ran(undo));
         });
@@ -661,22 +661,22 @@ fn test_synced_vec_push_pop() {
     let world = app.world_mut();
 
     let key = create_sync_key(world);
-    let values = create_ref(world, Vec::<i32>::new());
+    let values = state(world, Vec::<i32>::new());
 
     test_eval(world, move |world| {
         record(world, TestEvent::Ran("root"));
-        let mut count = create_ref(world, 0);
+        let mut count = state(world, 0);
 
         action(world, move |world| {
             push(world, key, values, 100, "prefix", "undo prefix");
         });
 
         action(world, move |world| {
-            let value = *count.read(&mut *world);
+            let value = *count.read(world.into());
             record(world, TestEvent::Read(value));
 
             // Only the untouched prefix remains before rebuilding.
-            expect_eq!(values.silent_read(&mut *world).as_slice(), &[100],);
+            expect_eq!(values.read_silent(world.into()).as_slice(), &[100],);
 
             push(world, key, values, value, "middle", "undo middle");
 
@@ -690,15 +690,15 @@ fn test_synced_vec_push_pop() {
         });
 
         action(world, move |world| {
-            let value = *count.read(&mut *world);
+            let value = *count.read(world.into());
 
             expect_eq!(
-                values.silent_read(&mut *world).as_slice(),
+                values.read_silent(world.into()).as_slice(),
                 &[100, value, value + 10, 99],
             );
 
             if value < 2 {
-                *count.write(&mut *world) = value + 1;
+                *count.write(world.into()) = value + 1;
                 record(world, TestEvent::Ran("increment"));
             } else {
                 record(world, TestEvent::Ran("done"));
@@ -731,7 +731,10 @@ fn test_synced_vec_push_pop() {
     expected.push(TestEvent::Ran("done"));
     expect_trace(world, &expected);
 
-    expect_eq!(values.silent_read(world).as_slice(), &[100, 2, 12, 99],);
+    expect_eq!(
+        values.read_silent(world.into()).as_slice(),
+        &[100, 2, 12, 99],
+    );
 }
 
 #[gtest]
@@ -739,16 +742,16 @@ fn test_sync_point_vec_push_pop() {
     fn push(
         world: &mut World,
         key: crate::action::sync::SyncKey,
-        mut values: crate::tracked_value::Ref<Vec<i32>>,
+        mut values: crate::state::State<Vec<i32>>,
         value: i32,
         run: &'static str,
         undo: &'static str,
     ) {
-        values.silent_write(&mut *world).push(value);
+        values.write_silent(world.into()).push(value);
         record(world, TestEvent::Ran(run));
 
         synced_rewind(world, [key], move |world| {
-            let popped = values.silent_write(&mut *world).pop();
+            let popped = values.write_silent(world.into()).pop();
             expect_eq!(popped, Some(value));
             record(world, TestEvent::Ran(undo));
         });
@@ -758,28 +761,28 @@ fn test_sync_point_vec_push_pop() {
     let world = app.world_mut();
 
     let key = create_sync_key(world);
-    let values = create_ref(world, Vec::<i32>::new());
+    let values = state(world, Vec::<i32>::new());
 
     test_eval(world, move |world| {
         record(world, TestEvent::Ran("root"));
-        let mut count = create_ref(world, 0);
+        let mut count = state(world, 0);
 
         action(world, move |world| {
             push(world, key, values, 100, "prefix", "undo prefix");
         });
 
         action(world, move |world| {
-            let value = *count.read(&mut *world);
+            let value = *count.read(world.into());
             record(world, TestEvent::Read(value));
 
             crate::action::sync::sync_point(world, [key]);
 
-            expect_eq!(values.silent_read(&mut *world).as_slice(), &[100],);
+            expect_eq!(values.read_silent(world.into()).as_slice(), &[100],);
             record(world, TestEvent::Ran("synced read"));
         });
 
         action(world, move |world| {
-            let value = *count.silent_read(&mut *world);
+            let value = *count.read_silent(world.into());
             push(world, key, values, value, "middle", "undo middle");
 
             action(world, move |world| {
@@ -792,15 +795,15 @@ fn test_sync_point_vec_push_pop() {
         });
 
         action(world, move |world| {
-            let value = *count.read(&mut *world);
+            let value = *count.read(world.into());
 
             expect_eq!(
-                values.silent_read(&mut *world).as_slice(),
+                values.read_silent(world.into()).as_slice(),
                 &[100, value, value + 10, 99],
             );
 
             if value < 2 {
-                *count.write(&mut *world) = value + 1;
+                *count.write(world.into()) = value + 1;
                 record(world, TestEvent::Ran("increment"));
             } else {
                 record(world, TestEvent::Ran("done"));
@@ -835,7 +838,10 @@ fn test_sync_point_vec_push_pop() {
     expected.push(TestEvent::Ran("done"));
     expect_trace(world, &expected);
 
-    expect_eq!(values.silent_read(world).as_slice(), &[100, 2, 12, 99],);
+    expect_eq!(
+        values.read_silent(world.into()).as_slice(),
+        &[100, 2, 12, 99],
+    );
 }
 
 #[gtest]
@@ -843,16 +849,16 @@ fn test_nested_sync_point_vec_push_pop() {
     fn push(
         world: &mut World,
         key: crate::action::sync::SyncKey,
-        mut values: crate::tracked_value::Ref<Vec<i32>>,
+        mut values: crate::state::State<Vec<i32>>,
         value: i32,
         run: &'static str,
         undo: &'static str,
     ) {
-        values.silent_write(&mut *world).push(value);
+        values.write_silent(world.into()).push(value);
         record(world, TestEvent::Ran(run));
 
         synced_rewind(world, [key], move |world| {
-            let popped = values.silent_write(&mut *world).pop();
+            let popped = values.write_silent(world.into()).pop();
             expect_eq!(popped, Some(value));
             record(world, TestEvent::Ran(undo));
         });
@@ -862,18 +868,18 @@ fn test_nested_sync_point_vec_push_pop() {
     let world = app.world_mut();
 
     let key = create_sync_key(world);
-    let values = create_ref(world, Vec::<i32>::new());
+    let values = state(world, Vec::<i32>::new());
 
     test_eval(world, move |world| {
         record(world, TestEvent::Ran("root"));
-        let mut count = create_ref(world, 0);
+        let mut count = state(world, 0);
 
         action(world, move |world| {
             push(world, key, values, 100, "prefix", "undo prefix");
         });
 
         action(world, move |world| {
-            let value = *count.read(&mut *world);
+            let value = *count.read(world.into());
             record(world, TestEvent::Read(value));
 
             action(world, move |world| {
@@ -881,7 +887,7 @@ fn test_nested_sync_point_vec_push_pop() {
 
                 crate::action::sync::sync_point(world, [key]);
 
-                expect_eq!(values.silent_read(&mut *world).as_slice(), &[100],);
+                expect_eq!(values.read_silent(world.into()).as_slice(), &[100],);
                 record(world, TestEvent::Ran("synced read"));
             });
 
@@ -889,7 +895,7 @@ fn test_nested_sync_point_vec_push_pop() {
         });
 
         action(world, move |world| {
-            let value = *count.silent_read(&mut *world);
+            let value = *count.read_silent(world.into());
             push(world, key, values, value, "middle", "undo middle");
 
             action(world, move |world| {
@@ -902,15 +908,15 @@ fn test_nested_sync_point_vec_push_pop() {
         });
 
         action(world, move |world| {
-            let value = *count.read(&mut *world);
+            let value = *count.read(world.into());
 
             expect_eq!(
-                values.silent_read(&mut *world).as_slice(),
+                values.read_silent(world.into()).as_slice(),
                 &[100, value, value + 10, 99],
             );
 
             if value < 2 {
-                *count.write(&mut *world) = value + 1;
+                *count.write(world.into()) = value + 1;
                 record(world, TestEvent::Ran("increment"));
             } else {
                 record(world, TestEvent::Ran("done"));
@@ -949,7 +955,10 @@ fn test_nested_sync_point_vec_push_pop() {
     expected.push(TestEvent::Ran("done"));
     expect_trace(world, &expected);
 
-    expect_eq!(values.silent_read(world).as_slice(), &[100, 2, 12, 99],);
+    expect_eq!(
+        values.read_silent(world.into()).as_slice(),
+        &[100, 2, 12, 99],
+    );
 }
 
 #[gtest]
@@ -957,16 +966,16 @@ fn test_nested_sync_point_with_parent_synced_write() {
     fn push(
         world: &mut World,
         key: crate::action::sync::SyncKey,
-        mut values: crate::tracked_value::Ref<Vec<i32>>,
+        mut values: crate::state::State<Vec<i32>>,
         value: i32,
         run: &'static str,
         undo: &'static str,
     ) {
-        values.silent_write(&mut *world).push(value);
+        values.write_silent(world.into()).push(value);
         record(world, TestEvent::Ran(run));
 
         synced_rewind(world, [key], move |world| {
-            let popped = values.silent_write(&mut *world).pop();
+            let popped = values.write_silent(world.into()).pop();
             expect_eq!(popped, Some(value));
             record(world, TestEvent::Ran(undo));
         });
@@ -976,18 +985,18 @@ fn test_nested_sync_point_with_parent_synced_write() {
     let world = app.world_mut();
 
     let key = create_sync_key(world);
-    let values = create_ref(world, Vec::<i32>::new());
+    let values = state(world, Vec::<i32>::new());
 
     test_eval(world, move |world| {
         record(world, TestEvent::Ran("root"));
-        let mut count = create_ref(world, 0);
+        let mut count = state(world, 0);
 
         action(world, move |world| {
             push(world, key, values, 100, "prefix", "undo prefix");
         });
 
         action(world, move |world| {
-            let value = *count.read(&mut *world);
+            let value = *count.read(world.into());
             record(world, TestEvent::Read(value));
 
             action(world, move |world| {
@@ -995,7 +1004,7 @@ fn test_nested_sync_point_with_parent_synced_write() {
 
                 crate::action::sync::sync_point(world, [key]);
 
-                expect_eq!(values.silent_read(&mut *world).as_slice(), &[100],);
+                expect_eq!(values.read_silent(world.into()).as_slice(), &[100],);
                 record(world, TestEvent::Ran("synced read"));
             });
 
@@ -1010,7 +1019,7 @@ fn test_nested_sync_point_with_parent_synced_write() {
         });
 
         action(world, move |world| {
-            let value = *count.silent_read(&mut *world);
+            let value = *count.read_silent(world.into());
             push(world, key, values, value, "middle", "undo middle");
 
             action(world, move |world| {
@@ -1023,15 +1032,15 @@ fn test_nested_sync_point_with_parent_synced_write() {
         });
 
         action(world, move |world| {
-            let value = *count.read(&mut *world);
+            let value = *count.read(world.into());
 
             expect_eq!(
-                values.silent_read(&mut *world).as_slice(),
+                values.read_silent(world.into()).as_slice(),
                 &[100, value + 20, value, value + 10, 99],
             );
 
             if value < 2 {
-                *count.write(&mut *world) = value + 1;
+                *count.write(world.into()) = value + 1;
                 record(world, TestEvent::Ran("increment"));
             } else {
                 record(world, TestEvent::Ran("done"));
@@ -1071,7 +1080,10 @@ fn test_nested_sync_point_with_parent_synced_write() {
     expected.push(TestEvent::Ran("done"));
     expect_trace(world, &expected);
 
-    expect_eq!(values.silent_read(world).as_slice(), &[100, 22, 2, 12, 99],);
+    expect_eq!(
+        values.read_silent(world.into()).as_slice(),
+        &[100, 22, 2, 12, 99],
+    );
 }
 
 #[gtest]
@@ -1080,12 +1092,12 @@ fn test_synced_ref_writer_stops_writing() {
     let world = app.world_mut();
 
     test_eval(world, move |world| {
-        let mut enabled = create_ref(world, true);
+        let mut enabled = state(world, true);
         let mut values = var(world, Vec::<i32>::new());
 
         action(world, move |world| {
-            if *enabled.read(&mut *world) {
-                values.write(world).push(1);
+            if *enabled.read(world.into()) {
+                values.write(world.into()).push(1);
                 record(world, TestEvent::Ran("push"));
             } else {
                 record(world, TestEvent::Ran("skip"));
@@ -1093,12 +1105,12 @@ fn test_synced_ref_writer_stops_writing() {
         });
 
         action(world, move |world| {
-            let len = values.read(world).len() as i32;
+            let len = values.read(world.into()).len() as i32;
             record(world, TestEvent::Read(len));
         });
 
         action(world, move |world| {
-            *enabled.write(&mut *world) = false;
+            *enabled.write(world.into()) = false;
             record(world, TestEvent::Ran("disable"));
         });
     });
@@ -1121,19 +1133,19 @@ fn test_synced_ref_writer_toggles() {
     let world = app.world_mut();
 
     test_eval(world, move |world| {
-        let mut phase = create_ref(world, 0);
+        let mut phase = state(world, 0);
         let mut values = var(world, vec![100]);
 
         action(world, move |world| {
-            expect_eq!(values.read(world).as_slice(), &[100]);
+            expect_eq!(values.read(world.into()).as_slice(), &[100]);
             record(world, TestEvent::Ran("prefix read"));
         });
 
         action(world, move |world| {
-            let n = *phase.read(&mut *world);
+            let n = *phase.read(world.into());
 
             if n % 2 == 1 {
-                values.write(world).push(n);
+                values.write(world.into()).push(n);
                 record(world, TestEvent::Ran("push"));
             } else {
                 record(world, TestEvent::Ran("skip"));
@@ -1141,20 +1153,20 @@ fn test_synced_ref_writer_toggles() {
         });
 
         action(world, move |world| {
-            values.write(world).push(99);
+            values.write(world.into()).push(99);
             record(world, TestEvent::Ran("tail"));
         });
 
         action(world, move |world| {
             // Silent: this reader must be scheduled by values.
-            let n = *phase.silent_read(&mut *world);
+            let n = *phase.read_silent(world.into());
             let expected = if n % 2 == 1 {
                 vec![100, n, 99]
             } else {
                 vec![100, 99]
             };
 
-            let actual = values.read(world);
+            let actual = values.read(world.into());
             expect_eq!(actual.as_slice(), expected.as_slice());
             let len = actual.len() as i32;
             drop(actual);
@@ -1163,9 +1175,9 @@ fn test_synced_ref_writer_toggles() {
         });
 
         action(world, move |world| {
-            let n = *phase.read(&mut *world);
+            let n = *phase.read(world.into());
             if n < 3 {
-                *phase.write(&mut *world) = n + 1;
+                *phase.write(world.into()) = n + 1;
             }
         });
     });
@@ -1189,33 +1201,33 @@ fn test_synced_ref_multiple_writes_with_nested_action() {
     let world = app.world_mut();
 
     test_eval(world, move |world| {
-        let mut phase = create_ref(world, 0);
+        let mut phase = state(world, 0);
         let mut values = var(world, vec![100]);
 
         action(world, move |world| {
-            let n = *phase.read(&mut *world);
+            let n = *phase.read(world.into());
 
-            expect_eq!(values.read(world).as_slice(), &[100]);
+            expect_eq!(values.read(world.into()).as_slice(), &[100]);
 
-            values.write(world).push(n);
+            values.write(world.into()).push(n);
             record(world, TestEvent::Ran("parent first"));
 
             action(world, move |world| {
-                expect_eq!(values.read(world).as_slice(), &[100, n],);
+                expect_eq!(values.read(world.into()).as_slice(), &[100, n],);
 
-                values.write(world).push(n + 10);
+                values.write(world.into()).push(n + 10);
                 record(world, TestEvent::Ran("child"));
             });
 
-            expect_eq!(values.read(world).as_slice(), &[100, n, n + 10],);
+            expect_eq!(values.read(world.into()).as_slice(), &[100, n, n + 10],);
 
-            values.write(world).push(n + 20);
+            values.write(world.into()).push(n + 20);
             record(world, TestEvent::Ran("parent last"));
         });
 
         action(world, move |world| {
-            let n = *phase.silent_read(&mut *world);
-            let actual = values.read(world);
+            let n = *phase.read_silent(world.into());
+            let actual = values.read(world.into());
 
             expect_eq!(actual.as_slice(), &[100, n, n + 10, n + 20],);
 
@@ -1225,9 +1237,9 @@ fn test_synced_ref_multiple_writes_with_nested_action() {
         });
 
         action(world, move |world| {
-            let n = *phase.read(&mut *world);
+            let n = *phase.read(world.into());
             if n < 2 {
-                *phase.write(&mut *world) = n + 1;
+                *phase.write(world.into()) = n + 1;
             }
         });
     });
@@ -1252,18 +1264,18 @@ fn test_synced_ref_independent_values() {
     let world = app.world_mut();
 
     test_eval(world, move |world| {
-        let mut phase = create_ref(world, 0);
+        let mut phase = state(world, 0);
         let mut left = var(world, Vec::<i32>::new());
         let mut right = var(world, Vec::<i32>::new());
 
         action(world, move |world| {
-            let n = *phase.read(&mut *world);
-            left.write(world).push(n);
+            let n = *phase.read(world.into());
+            left.write(world.into()).push(n);
             record(world, TestEvent::Ran("left write"));
         });
 
         action(world, move |world| {
-            right.write(world).push(99);
+            right.write(world.into()).push(99);
             record(world, TestEvent::Ran("right write"));
         });
 
@@ -1273,8 +1285,8 @@ fn test_synced_ref_independent_values() {
         });
 
         action(world, move |world| {
-            let n = *phase.silent_read(&mut *world);
-            let actual = left.read(world);
+            let n = *phase.read_silent(world.into());
+            let actual = left.read(world.into());
 
             expect_eq!(actual.as_slice(), &[n]);
 
@@ -1284,9 +1296,9 @@ fn test_synced_ref_independent_values() {
         });
 
         action(world, move |world| {
-            let n = *phase.read(&mut *world);
+            let n = *phase.read(world.into());
             if n < 2 {
-                *phase.write(&mut *world) = n + 1;
+                *phase.write(world.into()) = n + 1;
             }
         });
     });
@@ -1319,39 +1331,39 @@ fn test_synced_ref_nested_writer_disappears_and_returns() {
     let world = app.world_mut();
 
     test_eval(world, move |world| {
-        let mut count = ref_(world, 0);
+        let mut count = state(world, 0);
         let mut numbers = var(world, vec![]);
 
         action(world, move |world| {
-            if *count.read(&mut *world) != 4 {
+            if *count.read(world.into()) != 4 {
                 action(world, move |world| {
-                    numbers.write(world).push(1);
+                    numbers.write(world.into()).push(1);
                 });
             }
         });
 
         action(world, move |world| {
-            let snapshot = numbers.read(world).to_vec();
+            let snapshot = numbers.read(world.into()).to_vec();
             world.resource_mut::<Snapshots>().prefix.push(snapshot);
             record(world, TestEvent::Ran("prefix"));
         });
 
         action(world, move |world| {
-            let read = count.read(&mut *world);
-            numbers.write(world).push(*read);
+            let read = count.read(world.into());
+            numbers.write(world.into()).push(*read);
         });
 
         action(world, move |world| {
-            numbers.write(world).push(69);
+            numbers.write(world.into()).push(69);
 
-            let snapshot = numbers.read(world).to_vec();
+            let snapshot = numbers.read(world.into()).to_vec();
             world.resource_mut::<Snapshots>().end.push(snapshot);
             record(world, TestEvent::Ran("end"));
         });
 
         action(world, move |world| {
-            if *count.read(&mut *world) < 5 {
-                *count.write(world) += 1;
+            if *count.read(world.into()) < 5 {
+                *count.write(world.into()) += 1;
             }
         });
     });

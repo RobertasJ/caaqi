@@ -1,7 +1,8 @@
 pub mod action;
 pub mod prelude;
-pub mod tracked_value;
-pub mod value_storage;
+pub mod state;
+pub mod tracking;
+pub mod value;
 pub mod var;
 
 use std::panic::Location;
@@ -14,7 +15,7 @@ use crate::{
         context_builder::ActionEntity,
         sync::{SyncKey, SyncKeyToActions},
     },
-    tracked_value::{RefNotify, RefSubscribe, RefTypeErased},
+    tracking::{Notify, Subscribe},
 };
 
 pub struct CaaqiPlugin;
@@ -22,8 +23,8 @@ pub struct CaaqiPlugin;
 impl Plugin for CaaqiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Attached<ActionEntity>>()
-            .init_resource::<Attached<RefSubscribe>>()
-            .init_resource::<Attached<RefNotify>>()
+            .init_resource::<Attached<Subscribe>>()
+            .init_resource::<Attached<Notify>>()
             .init_resource::<Attached<SyncKey>>()
             .init_resource::<SyncKeyToActions>();
     }

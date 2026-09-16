@@ -1,3 +1,6 @@
+use std::hash::{Hash, Hasher};
+use std::panic::Location;
+
 use bevy::ecs::world::{DeferredWorld, World};
 
 use crate::{
@@ -5,69 +8,97 @@ use crate::{
         context_builder::{rewind, synced_rewind},
         sync::{SyncKey, create_sync_key, drop_sync_key, sync_point},
     },
-    tracked_value::{ReadRef, Ref, WriteRef, create_ref, drop_ref},
+    state::State,
+    tracking::{TrackingKey, notify, notify_with_caller},
+    value::{AtomicRefCellStorage, Storage, Value},
 };
 
-#[derive(Debug, PartialEq, Eq)]
 pub struct Var<T: Clone + Send + Sync + 'static> {
-    ref_: Ref<T>,
+    value: Value<T>,
     sync_key: SyncKey,
+    tracking_key: TrackingKey,
 }
 
 impl<T: Clone + Send + Sync + 'static> Clone for Var<T> {
     fn clone(&self) -> Self {
-        Self {
-            ref_: self.ref_.clone(),
-            sync_key: self.sync_key,
-        }
+        *self
     }
 }
 
 impl<T: Clone + Send + Sync + 'static> Copy for Var<T> {}
 
-pub fn create_var<T: Clone + Send + Sync + 'static>(world: &mut World, value: T) -> Var<T> {
-    let sync_key = create_sync_key(world);
-    let ref_ = create_ref(world, value);
-
-    Var { ref_, sync_key }
+impl<T: Clone + Send + Sync + 'static> PartialEq for Var<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
 }
 
-pub fn drop_var<T: Clone + Send + Sync + 'static>(world: &mut World, var: Var<T>) {
-    let Var { ref_, sync_key } = var;
+impl<T: Clone + Send + Sync + 'static> Eq for Var<T> {}
 
-    drop_ref(world, ref_);
-    drop_sync_key(world, sync_key);
+impl<T: Clone + Send + Sync + 'static> Hash for Var<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.value.hash(state);
+    }
 }
 
 pub fn var<T: Clone + Send + Sync + 'static>(world: &mut World, value: T) -> Var<T> {
-    let synced_ref = create_var(world, value);
+    let var = Var::new(world, value);
 
     rewind(world, move |world| {
-        drop_var(world, synced_ref);
+        var.remove(world);
     });
 
-    synced_ref
+    var
 }
 
 impl<T: Clone + Send + Sync + 'static> Var<T> {
-    #[track_caller]
-    pub fn read(&self, world: &mut World) -> ReadRef<T> {
-        sync_point(world, [self.sync_key]);
-        self.ref_.read(&mut *world)
+    pub fn new_with_caller(
+        world: &mut World,
+        caller: &'static Location<'static>,
+        value: T,
+    ) -> Self {
+        let value = Value::new_with_caller(world, caller, value);
+        let sync_key = create_sync_key(world);
+        let tracking_key = TrackingKey::new(world);
+        Var {
+            value,
+            sync_key,
+            tracking_key,
+        }
     }
 
     #[track_caller]
-    pub fn write(&mut self, world: &mut World) -> WriteRef<T> {
+    pub fn new(world: &mut World, value: T) -> Self {
+        Self::new_with_caller(world, Location::caller(), value)
+    }
+
+    pub fn remove(self, world: &mut World) {
+        self.value.remove(world);
+        drop_sync_key(world, self.sync_key);
+        self.tracking_key.remove(world);
+    }
+
+    #[track_caller]
+    pub fn read(&self, world: &mut World) -> <AtomicRefCellStorage<T> as Storage>::Ref {
         sync_point(world, [self.sync_key]);
-        let old = self.ref_.read(&mut *world).clone();
-        let mut ref_ = self.ref_;
+        self.value.read(world.into())
+    }
+
+    #[track_caller]
+    pub fn write(&mut self, world: &mut World) -> <AtomicRefCellStorage<T> as Storage>::RefMut {
+        sync_point(world, [self.sync_key]);
+
+        let old = self.value.read(world.into()).clone();
+        let mut value = self.value;
+        let tracking_key = self.tracking_key;
         let caller = std::panic::Location::caller();
+
         synced_rewind(world, [self.sync_key], move |world| {
-            *ref_.silent_write(&mut *world) = old;
-            ref_.notify_forward_only_with_caller(&mut *world, caller);
+            *value.write(world.into()) = old;
+            notify_with_caller(world.into(), caller, tracking_key, true);
         });
 
-        self.ref_.notify_forward_only(&mut *world);
-        self.ref_.silent_write(world)
+        notify(world.into(), tracking_key, true);
+        self.value.write(world.into())
     }
 }

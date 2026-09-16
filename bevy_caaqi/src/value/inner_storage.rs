@@ -6,7 +6,7 @@ use std::{
 
 use atomic_refcell::AtomicRefCell;
 
-use crate::value_storage::{ArcBorrow, ArcBorrowMut, arc_borrow};
+use crate::value::{ArcBorrow, ArcBorrowMut, arc_borrow};
 
 pub trait Storage: Send + Sync + 'static {
     type Value: Send + Sync + 'static;

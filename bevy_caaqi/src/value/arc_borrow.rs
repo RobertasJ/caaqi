@@ -4,7 +4,7 @@ use std::sync::Arc;
 use atomic_refcell::{AtomicRef, AtomicRefCell, AtomicRefMut, BorrowError, BorrowMutError};
 use ouroboros::self_referencing;
 
-use crate::value_storage::AtomicRefCellStorage;
+use crate::value::AtomicRefCellStorage;
 
 #[self_referencing]
 pub struct ArcBorrow<T: 'static> {

@@ -8,46 +8,19 @@ use std::sync::Arc;
 
 use atomic_refcell::AtomicRefCell;
 use bevy::ecs::component::Component;
-use bevy::ecs::entity::{
-    Entity, EntityNotSpawnedError, EntityValidButNotSpawnedError, InvalidEntityError,
-};
+use bevy::ecs::entity::{Entity, EntityNotSpawnedError};
 use bevy::ecs::world::{DeferredWorld, World};
-use thiserror::Error;
 
 use crate::CreatedAt;
-use crate::value_storage::inner_storage::{AtomicRefCellStorage, Storage};
+use crate::action::context_builder::rewind;
 
 mod arc_borrow;
+mod error;
 mod inner_storage;
 
-pub use arc_borrow::{ArcBorrow, ArcBorrowMut};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum ValueStorageError {
-    #[error("The stored value has been dropped. {0}")]
-    ValueDropped(EntityValidButNotSpawnedError),
-    #[error("Type mismatch: expected {requested_type}, found {value_type}")]
-    TypeMismatch {
-        value_type: &'static str,
-        requested_type: &'static str,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum ValueReadError<S: Storage<Value = T>, T> {
-    #[error("Failed to read value: {0}")]
-    StorageError(S::ReadError),
-    #[error(transparent)]
-    ValueStorageError(#[from] ValueStorageError),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum ValueWriteError<S: Storage<Value = T>, T> {
-    #[error("Failed to write value: {0}")]
-    StorageError(S::WriteError),
-    #[error(transparent)]
-    ValueStorageError(#[from] ValueStorageError),
-}
+pub use arc_borrow::*;
+pub use error::*;
+pub use inner_storage::*;
 
 pub trait NamedAny: Any {
     fn type_name(&self) -> &'static str;
@@ -136,6 +109,27 @@ impl ValueErased {
             )
         })
     }
+
+    pub fn try_downcast<T: Send + Sync + 'static, S: Storage<Value = T>>(
+        self,
+        world: DeferredWorld,
+    ) -> Result<Value<T, S>, ValueStorageError> {
+        let _ = self.try_get::<S>(world)?;
+        Ok(Value(self, PhantomData))
+    }
+
+    pub fn downcast<T: Send + Sync + 'static, S: Storage<Value = T>>(
+        self,
+        world: DeferredWorld,
+    ) -> Value<T, S> {
+        self.try_downcast(world).unwrap_or_else(|err| {
+            panic!(
+                "Failed to downcast value to type {}: {}",
+                std::any::type_name::<T>(),
+                err
+            )
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -143,6 +137,16 @@ pub struct Value<T: Send + Sync + 'static, S: Storage = AtomicRefCellStorage<T>>
     ValueErased,
     PhantomData<(T, S)>,
 );
+
+pub fn val<T: Send + Sync + 'static>(world: &mut World, value: T) -> Value<T> {
+    let value = Value::new(world, value);
+
+    rewind(world, move |world| {
+        value.remove(world);
+    });
+
+    value
+}
 
 impl<T: Send + Sync + 'static, S: Storage> Clone for Value<T, S> {
     fn clone(&self) -> Self {
@@ -203,7 +207,7 @@ impl<T: Send + Sync + 'static, S: Storage<Value = T>> Value<T, S> {
             .map_err(|e| ValueReadError::StorageError(e))
     }
 
-    pub fn try_write(&self, world: DeferredWorld) -> Result<S::RefMut, ValueWriteError<S, T>> {
+    pub fn try_write(&mut self, world: DeferredWorld) -> Result<S::RefMut, ValueWriteError<S, T>> {
         let storage = self.0.try_get::<S>(world)?;
         storage
             .try_write()
@@ -220,7 +224,7 @@ impl<T: Send + Sync + 'static, S: Storage<Value = T>> Value<T, S> {
         })
     }
 
-    pub fn write(&self, world: DeferredWorld) -> S::RefMut {
+    pub fn write(&mut self, world: DeferredWorld) -> S::RefMut {
         self.try_write(world).unwrap_or_else(|err| {
             panic!(
                 "Failed to write value of type {}: {}",
@@ -228,5 +232,13 @@ impl<T: Send + Sync + 'static, S: Storage<Value = T>> Value<T, S> {
                 err
             )
         })
+    }
+
+    pub fn remove(self, world: &mut World) {
+        self.0.remove(world);
+    }
+
+    pub fn erased(self) -> ValueErased {
+        self.0
     }
 }
