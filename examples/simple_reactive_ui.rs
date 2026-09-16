@@ -34,8 +34,10 @@ fn setup_ui(mut commands: Commands) {
         });
 
         action(move || {
-            let mut child = NodeMutator::new();
-            root_node.add_child(child);
+            let child = NodeMutator::new();
+            action(move || {
+                root_node.add_child(child);
+            });
 
             child.set_width(100.0);
             child.set_height(100.0);
@@ -51,14 +53,18 @@ fn setup_ui(mut commands: Commands) {
 
         action(move || {
             if *root_node.is_hovered.read() {
-                let mut child = NodeMutator::new();
-                root_node.add_child(child);
+                let child = NodeMutator::new();
+                action(move || {
+                    root_node.add_child(child);
+                });
                 child.set_width(100.0);
                 child.set_height(100.0);
                 child.set_color(Color::hsl(200.0, 0.9, 0.5));
             } else {
-                let mut long_child = NodeMutator::new();
-                root_node.add_child(long_child);
+                let long_child = NodeMutator::new();
+                action(move || {
+                    root_node.add_child(long_child);
+                });
                 long_child.set_width(400.0);
                 long_child.set_height(100.0);
                 long_child.set_color(Color::hsl(300.0, 0.9, 0.5));
@@ -67,8 +73,10 @@ fn setup_ui(mut commands: Commands) {
 
         for _ in 0..5 {
             action(move || {
-                let mut child = NodeMutator::new();
-                root_node.add_child(child);
+                let child = NodeMutator::new();
+                action(move || {
+                    root_node.add_child(child);
+                });
 
                 child.set_width(100.0);
                 child.set_height(100.0);
@@ -88,7 +96,8 @@ fn setup_ui(mut commands: Commands) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NodeMutator {
     node_entity: Entity,
-    sync_key: SyncKey,
+    children_sync_key: SyncKey,
+    state_sync_key: SyncKey,
     is_hovered: Ref<bool>,
 }
 
@@ -112,7 +121,8 @@ impl NodeMutator {
 
         let mut self_ = Self {
             node_entity,
-            sync_key: sync_key(),
+            children_sync_key: sync_key(),
+            state_sync_key: sync_key(),
             is_hovered,
         };
 
@@ -127,33 +137,57 @@ impl NodeMutator {
         self_
     }
 
-    fn set_color(&mut self, color: Color) {
-        WorldContext::with_deferred_world(|mut world| {
-            world
-                .entity_mut(self.node_entity)
-                .get_mut::<BackgroundColor>()
-                .unwrap()
-                .0 = color;
+    fn set_color(self, color: Color) {
+        let prev = WorldContext::with_deferred_world(|mut world| {
+            let mut binding = world.entity_mut(self.node_entity);
+            let mut background_color = binding.get_mut::<BackgroundColor>().unwrap();
+            let prev = background_color.0;
+            background_color.0 = color;
+            prev
+        });
+        synced_rewind([self.state_sync_key], move || {
+            WorldContext::with_deferred_world(|mut world| {
+                let mut binding = world.entity_mut(self.node_entity);
+                let mut background_color = binding.get_mut::<BackgroundColor>().unwrap();
+                background_color.0 = prev;
+            });
         });
     }
 
-    fn set_width(&mut self, width: f32) {
-        WorldContext::with_deferred_world(|mut world| {
-            world
-                .entity_mut(self.node_entity)
-                .get_mut::<Node>()
-                .unwrap()
-                .width = Val::Px(width);
+    fn set_width(self, width: f32) {
+        let prev = WorldContext::with_deferred_world(|mut world| {
+            let mut entity_mut = world.entity_mut(self.node_entity);
+            let mut node = entity_mut.get_mut::<Node>().unwrap();
+            let prev = node.width;
+            node.width = Val::Px(width);
+
+            prev
+        });
+
+        synced_rewind([self.state_sync_key], move || {
+            WorldContext::with_deferred_world(|mut world| {
+                let mut entity_mut = world.entity_mut(self.node_entity);
+                let mut node = entity_mut.get_mut::<Node>().unwrap();
+                node.width = prev;
+            });
         });
     }
 
-    fn set_height(&mut self, height: f32) {
-        WorldContext::with_deferred_world(|mut world| {
-            world
-                .entity_mut(self.node_entity)
-                .get_mut::<Node>()
-                .unwrap()
-                .height = Val::Px(height);
+    fn set_height(self, height: f32) {
+        let prev = WorldContext::with_deferred_world(|mut world| {
+            let mut entity_mut = world.entity_mut(self.node_entity);
+            let mut node = entity_mut.get_mut::<Node>().unwrap();
+            let prev = node.height;
+            node.height = Val::Px(height);
+            prev
+        });
+
+        synced_rewind([self.state_sync_key], move || {
+            WorldContext::with_deferred_world(|mut world| {
+                let mut entity_mut = world.entity_mut(self.node_entity);
+                let mut node = entity_mut.get_mut::<Node>().unwrap();
+                node.height = prev;
+            });
         });
     }
 
@@ -165,7 +199,7 @@ impl NodeMutator {
         });
 
         let self_ = *self;
-        synced_rewind([self.sync_key], move || {
+        synced_rewind([self.children_sync_key], move || {
             WorldContext::with_world(|world| {
                 world
                     .entity_mut(self_.node_entity)
@@ -177,20 +211,28 @@ impl NodeMutator {
     }
 
     fn observe<E: EntityEvent + 'static>(
-        &mut self,
+        self,
         mut callback: impl FnMut(On<E>) + Send + Sync + 'static,
     ) {
-        WorldContext::with_world(|world| {
-            world.entity_mut(self.node_entity).observe(
-                move |ev: On<E>, mut world: DeferredWorld| {
-                    WorldContext::set_deferred_world(world.reborrow(), || {
-                        callback(ev);
-                    });
+        let observer = WorldContext::with_world(|world| {
+            let mut observer = Observer::new(move |ev: On<E>, mut world: DeferredWorld| {
+                WorldContext::set_deferred_world(world.reborrow(), || {
+                    callback(ev);
+                });
 
-                    world.commands().queue(FlushWrites);
-                    world.commands().queue(ExecuteActionTrees);
-                },
-            );
+                world.commands().queue(FlushWrites);
+                world.commands().queue(ExecuteActionTrees);
+            });
+
+            observer.watch_entity(self.node_entity);
+
+            world.spawn(observer).id()
+        });
+
+        synced_rewind([self.state_sync_key], move || {
+            WorldContext::with_world(|world| {
+                world.despawn(observer);
+            })
         });
     }
 }
