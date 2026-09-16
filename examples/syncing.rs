@@ -4,14 +4,7 @@ use bevy::{
     ecs::system::Commands,
     log::LogPlugin,
 };
-use bevy_caaqi::{
-    CaaqiPlugin,
-    action::{
-        context_builder::{action, defer_action_eval, synced_rewind},
-        sync::{sync_key, sync_point},
-    },
-    tracked_value::ref_,
-};
+use bevy_caaqi::prelude::*;
 
 fn main() {
     App::new()
@@ -21,51 +14,51 @@ fn main() {
 }
 
 fn queue_eval(commands: Commands) {
-    defer_action_eval(commands, move |world| {
-        let mut numbers = ref_(world, vec![]);
-        let sync_key = sync_key(world);
-        let mut count = ref_(world, 0);
+    defer_action_eval(commands, move || {
+        let mut numbers = ref_(vec![]);
+        let sync_key = sync_key();
+        let mut count = ref_(0);
 
-        action(world, move |world| {
-            numbers.silent_write(&mut *world).push(1);
-            numbers.notify_forward_only(&mut *world);
+        action(move || {
+            numbers.silent_write().push(1);
+            numbers.notify_forward_only();
 
-            synced_rewind(world, [sync_key], move |world| {
-                numbers.silent_write(&mut *world).pop();
-                numbers.notify_forward_only(&mut *world);
+            synced_rewind([sync_key], move || {
+                numbers.silent_write().pop();
+                numbers.notify_forward_only();
             });
         });
 
-        action(world, move |world| {
-            sync_point(world, [sync_key]);
+        action(move || {
+            sync_point([sync_key]);
 
-            println!("state of numbers: {:?}", *numbers.read(world));
+            println!("state of numbers: {:?}", *numbers.read());
         });
 
-        action(world, move |world| {
-            let read = count.read(&mut *world);
-            numbers.silent_write(&mut *world).push(*read);
-            numbers.notify_forward_only(&mut *world);
+        action(move || {
+            let read = count.read();
+            numbers.silent_write().push(*read);
+            numbers.notify_forward_only();
 
-            synced_rewind(world, [sync_key], move |world| {
-                numbers.silent_write(&mut *world).pop();
-                numbers.notify_forward_only(&mut *world);
+            synced_rewind([sync_key], move || {
+                numbers.silent_write().pop();
+                numbers.notify_forward_only();
             });
         });
 
-        action(world, move |world| {
-            numbers.silent_write(&mut *world).push(69);
-            numbers.notify_forward_only(&mut *world);
+        action(move || {
+            numbers.silent_write().push(69);
+            numbers.notify_forward_only();
 
-            synced_rewind(world, [sync_key], move |world| {
-                numbers.silent_write(&mut *world).pop();
-                numbers.notify_forward_only(&mut *world);
+            synced_rewind([sync_key], move || {
+                numbers.silent_write().pop();
+                numbers.notify_forward_only();
             });
         });
 
-        action(world, move |world| {
-            if *count.read(&mut *world) < 3 {
-                *count.write(world) += 1;
+        action(move || {
+            if *count.read() < 3 {
+                *count.write() += 1;
             }
         });
     });

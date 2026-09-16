@@ -4,11 +4,7 @@ use bevy::{
     ecs::system::Commands,
     log::LogPlugin,
 };
-use bevy_caaqi::{
-    CaaqiPlugin,
-    action::context_builder::{action, defer_action_eval},
-    tracked_value::ref_,
-};
+use bevy_caaqi::prelude::*;
 
 fn main() {
     App::new()
@@ -18,17 +14,17 @@ fn main() {
 }
 
 fn queue_eval(commands: Commands) {
-    defer_action_eval(commands, move |world| {
-        let mut count = ref_(world, 0);
+    defer_action_eval(commands, move || {
+        let mut count = ref_(0);
 
         // expect this to print 0, and then 10, the second print happens because of writing to count
-        action(world, move |world| {
-            println!("Count: {}", *count.read(&mut *world));
+        action(move || {
+            println!("Count: {}", *count.read());
         });
 
-        action(world, move |world| {
+        action(move || {
             for _ in 0..10 {
-                *count.write(&mut *world) += 1;
+                *count.write() += 1;
             }
         });
     });

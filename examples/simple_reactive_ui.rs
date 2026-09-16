@@ -15,7 +15,7 @@ fn main() {
 fn setup_ui(mut commands: Commands) {
     commands.spawn(Camera2d);
 
-    defer_action_eval(commands.reborrow(), || {
+    defer_action_eval(commands.reborrow(), move || {
         let mut root_node = NodeMutator::new();
 
         root_node.observe(move |_ev: On<Pointer<Click>>| {
@@ -127,7 +127,7 @@ impl NodeMutator {
         self_
     }
 
-    fn set_color<'a>(&mut self, color: Color) {
+    fn set_color(&mut self, color: Color) {
         WorldContext::with_deferred_world(|mut world| {
             world
                 .entity_mut(self.node_entity)

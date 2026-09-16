@@ -4,15 +4,7 @@ use bevy::{
     ecs::system::Commands,
     log::LogPlugin,
 };
-use bevy_caaqi::{
-    CaaqiPlugin,
-    action::{
-        context_builder::{action, defer_action_eval, synced_rewind},
-        sync::{sync_key, sync_point},
-    },
-    tracked_value::ref_,
-    var::var,
-};
+use bevy_caaqi::prelude::*;
 
 fn main() {
     App::new()
@@ -22,36 +14,36 @@ fn main() {
 }
 
 fn queue_eval(commands: Commands) {
-    defer_action_eval(commands, move |world| {
-        let mut count = ref_(world, 0);
-        let mut numbers = var(world, vec![]);
+    defer_action_eval(commands, move || {
+        let mut count = ref_(0);
+        let mut numbers = var(vec![]);
 
-        action(world, move |world| {
-            if *count.read(&mut *world) != 4 {
-                action(world, move |world| {
-                    numbers.write(world).push(1);
+        action(move || {
+            if *count.read() != 4 {
+                action(move || {
+                    numbers.write().push(1);
                 });
             }
         });
 
-        action(world, move |world| {
-            println!("state of numbers: {:?}", *numbers.read(world));
+        action(move || {
+            println!("state of numbers: {:?}", *numbers.read());
         });
 
-        action(world, move |world| {
-            let read = count.read(&mut *world);
-            numbers.write(world).push(*read);
+        action(move || {
+            let read = count.read();
+            numbers.write().push(*read);
         });
 
-        action(world, move |world| {
-            numbers.write(world).push(69);
-            let read = numbers.read(world);
+        action(move || {
+            numbers.write().push(69);
+            let read = numbers.read();
             println!("state of numbers end: {:?}", *read);
         });
 
-        action(world, move |world| {
-            if *count.read(&mut *world) < 5 {
-                *count.write(world) += 1;
+        action(move || {
+            if *count.read() < 5 {
+                *count.write() += 1;
             }
         });
     });
