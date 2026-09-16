@@ -355,7 +355,7 @@ pub fn run_action_node(world: &mut World, node: Entity) {
         depends_on.len(),
         depends_on
             .iter()
-            .map(|r| format!("\t{}\n", r.location.to_string()))
+            .map(|r| format!("\tKey {:?} subscribed at {}\n", r.key, r.location))
             .collect::<Vec<_>>()
             .join(""),
         sub_actions_or_rewinds.len(),
@@ -398,29 +398,23 @@ pub fn run_action_node(world: &mut World, node: Entity) {
 pub fn flush_tracked_writes(world: &mut World) {
     let notifys = Attached::<Notify>::take(&mut *world);
 
-    // debug!(
-    //     "[execute_action_tree] Flushing tracked writes for refs at:\n{}",
-    //     notifys
-    //         .iter()
-    //         .map(|r| {
-    //             let location = world
-    //                 .get::<RefInitLocation>(r.key.0)
-    //                 .expect("the Ref has been deallocated");
-    //             format!(
-    //                 "\tRef {} at {} was written to at {}. ({})\n",
-    //                 *r.ref_,
-    //                 **location,
-    //                 r.location,
-    //                 if r.forward_only {
-    //                     "Forward-only notify"
-    //                 } else {
-    //                     "Full notify"
-    //                 }
-    //             )
-    //         })
-    //         .collect::<Vec<_>>()
-    //         .join("")
-    // );
+    debug!(
+        "[execute_action_tree] Flushing tracked writes:\n{}",
+        notifys
+            .iter()
+            .map(|notification| format!(
+                "\tKey {:?} notified at {}. ({})\n",
+                notification.key,
+                notification.location,
+                if notification.forward_only {
+                    "Forward-only notify"
+                } else {
+                    "Full notify"
+                },
+            ))
+            .collect::<Vec<_>>()
+            .join("")
+    );
 
     let forward_only_writes = notifys
         .iter()
@@ -434,33 +428,23 @@ pub fn flush_tracked_writes(world: &mut World) {
         .map(|v| v.key)
         .collect::<HashSet<_>>();
 
-    // trace!(
-    //     "[execute_action_tree] Full notifies for refs at:\n{}",
-    //     full_writes
-    //         .iter()
-    //         .map(|r| {
-    //             let location = world
-    //                 .get::<RefInitLocation>(**r)
-    //                 .expect("the Ref has been deallocated");
-    //             format!("\tRef at {} was written to\n", **location)
-    //         })
-    //         .collect::<Vec<_>>()
-    //         .join("")
-    // );
+    trace!(
+        "[execute_action_tree] Full notification keys:\n{}",
+        full_writes
+            .iter()
+            .map(|key| format!("\t{key:?}\n"))
+            .collect::<Vec<_>>()
+            .join("")
+    );
 
-    // trace!(
-    //     "[execute_action_tree] Forward-only notifies for refs at:\n{}",
-    //     forward_only_writes
-    //         .iter()
-    //         .map(|r| {
-    //             let location = world
-    //                 .get::<RefInitLocation>(**r)
-    //                 .expect("the Ref has been deallocated");
-    //             format!("\tRef at {} was written to\n", **location)
-    //         })
-    //         .collect::<Vec<_>>()
-    //         .join("")
-    // );
+    trace!(
+        "[execute_action_tree] Forward-only notification keys:\n{}",
+        forward_only_writes
+            .iter()
+            .map(|key| format!("\t{key:?}\n"))
+            .collect::<Vec<_>>()
+            .join("")
+    );
 
     let mut affected_nodes = HashSet::new();
 
