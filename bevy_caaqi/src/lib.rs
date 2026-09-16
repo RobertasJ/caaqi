@@ -1,7 +1,10 @@
 pub mod action;
 pub mod prelude;
 pub mod tracked_value;
+pub mod value_storage;
 pub mod var;
+
+use std::panic::Location;
 
 use bevy::prelude::*;
 use caaqi_context::Attached;
@@ -23,6 +26,15 @@ impl Plugin for CaaqiPlugin {
             .init_resource::<Attached<RefNotify>>()
             .init_resource::<Attached<SyncKey>>()
             .init_resource::<SyncKeyToActions>();
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Component)]
+pub struct CreatedAt(&'static Location<'static>);
+
+impl CreatedAt {
+    pub fn new(location: &'static Location<'static>) -> Self {
+        CreatedAt(location)
     }
 }
 

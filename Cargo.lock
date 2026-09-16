@@ -592,6 +592,7 @@ dependencies = [
  "googletest",
  "ouroboros",
  "smallvec",
+ "thiserror 2.0.20",
  "tracing-subscriber",
 ]
 
