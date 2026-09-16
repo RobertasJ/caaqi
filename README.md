@@ -2,6 +2,26 @@
 
 caaqi is an experimental self-adjusting computation framework built on Bevy ECS. It tracks dependencies between values and actions, then reruns affected code when those values change. The examples explore using this model for reactive UI.
 
+```rust
+use bevy_caaqi::prelude::*;
+
+defer_action_eval(commands, move || {
+    let mut count = ref_(0);
+    let mut numbers = var(Vec::<i32>::new());
+
+    action(move || {
+        let value = *count.read();
+        numbers.write().push(value);
+    });
+    action(move || {
+        println!("{:?}", *numbers.read());
+    });
+    action(move || count.set(1));
+});
+```
+
+This prints `[0]`, then `[1]`. Updating the ref reruns the dependent action; the var undoes its previous push before applying the new one. The vector does not accumulate old values. The snippet assumes Bevy `Commands` and an app with `CaaqiPlugin` installed.
+
 The API and execution model are still evolving. The examples and tests cover a growing set of behaviors, but untested cases may expose bugs. This is a project to explore and experiment with, rather than a finished framework.
 
 ## Examples
@@ -14,15 +34,10 @@ The API and execution model are still evolving. The examples and tests cover a g
 The examples include the Bevy application setup. The snippets below assume these imports and an application with `CaaqiPlugin` installed:
 
 ```rust
-use bevy_caaqi::{
-    CaaqiPlugin,
-    action::context_builder::{action, defer_action_eval},
-    tracked_value::ref_,
-    var::var,
-};
+use bevy_caaqi::prelude::*;
 ```
 
-World access is currently explicit. Removing the repeated `world` argument is a planned ergonomic improvement.
+The prelude wrappers provide implicit world access through `WorldContext`, so actions and value operations do not need a `world` argument. Use `WorldContext::with_world` or `WorldContext::with_deferred_world` when you need direct ECS access. The underlying modules still expose the explicit-world API.
 
 ## Actions and reactivity
 
@@ -31,16 +46,16 @@ An `action` is rerunnable code. Actions execute immediately in source order and 
 Reading a ref records a dependency for the current action. Writing to that ref notifies its readers, scheduling them for reexecution. Before an affected action runs again, caaqi rewinds its previous execution and removes its old children.
 
 ```rust
-defer_action_eval(commands, move |world| {
-    let mut count = ref_(world, 0);
+defer_action_eval(commands, move || {
+    let mut count = ref_(0);
 
-    action(world, move |world| {
-        println!("Count: {}", *count.read(&mut *world));
+    action(move || {
+        println!("Count: {}", *count.read());
     });
 
-    action(world, move |world| {
+    action(move || {
         for _ in 0..10 {
-            *count.write(&mut *world) += 1;
+            *count.write() += 1;
         }
     });
 });
@@ -67,15 +82,15 @@ Refs and vars serve different purposes:
 The intended invariant for a var is that each access observes the value a fresh execution of the action root would produce up to that point.
 
 ```rust
-defer_action_eval(commands, move |world| {
-    let mut numbers = var(world, Vec::<i32>::new());
+defer_action_eval(commands, move || {
+    let mut numbers = var(Vec::<i32>::new());
 
-    action(world, move |world| {
-        numbers.write(world).push(1);
+    action(move || {
+        numbers.write().push(1);
     });
 
-    action(world, move |world| {
-        println!("{:?}", *numbers.read(world));
+    action(move || {
+        println!("{:?}", *numbers.read());
     });
 });
 ```
@@ -93,11 +108,11 @@ Execution continues until no actions need to run again. An action that reads a r
 Reading and writing the same ref is useful when the write eventually stops:
 
 ```rust
-action(world, move |world| {
-    let value = *count.read(&mut *world);
+action(move || {
+    let value = *count.read();
 
     if value < 5 {
-        *count.write(&mut *world) = value + 1;
+        *count.write() = value + 1;
     }
 });
 ```
@@ -107,11 +122,11 @@ action(world, move |world| {
 `Ref::write()` emits a notification without checking equality. If notifications should depend on a value change, perform that check explicitly:
 
 ```rust
-action(world, move |world| {
-    let previous = *count.silent_read(&mut *world);
+action(move || {
+    let previous = *count.silent_read();
 
     if previous != 5 {
-        *count.write(&mut *world) = 5;
+        *count.write() = 5;
     }
 });
 ```
@@ -122,7 +137,7 @@ Forward-only notification methods are used internally by vars and should general
 
 ### Keep value access within action execution
 
-For normal use, read and write refs and vars inside actions. Event handlers require additional flushing and scheduling; the reactive UI example demonstrates that integration.
+For normal use, read and write refs and vars inside actions. Event handlers must establish a world context and arrange flushing and scheduling; the reactive UI example demonstrates that integration.
 
 ### Allocations belong to the execution that creates them
 
