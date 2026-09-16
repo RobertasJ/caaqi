@@ -171,7 +171,6 @@ impl<T: Any + Send + Sync + 'static, S: Storage<Value = T>> State<T, S> {
         mut world: DeferredWorld,
         caller: &'static std::panic::Location<'static>,
     ) -> S::RefMut {
-        self.subscribe_with_caller(world.reborrow(), caller);
         self.notify_with_caller(world.reborrow(), caller);
         self.write_silent(world)
     }
@@ -184,7 +183,6 @@ impl<T: Any + Send + Sync + 'static, S: Storage<Value = T>> State<T, S> {
 
     #[track_caller]
     pub fn write(&mut self, mut world: DeferredWorld) -> S::RefMut {
-        self.subscribe(world.reborrow());
         self.notify(world.reborrow());
         self.write_silent(world)
     }

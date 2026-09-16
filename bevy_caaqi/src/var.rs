@@ -3,6 +3,7 @@ use std::panic::Location;
 
 use bevy::ecs::world::{DeferredWorld, World};
 
+use crate::tracking::subscribe;
 use crate::{
     action::{
         context_builder::{rewind, synced_rewind},
@@ -81,6 +82,7 @@ impl<T: Clone + Send + Sync + 'static> Var<T> {
     #[track_caller]
     pub fn read(&self, world: &mut World) -> <AtomicRefCellStorage<T> as Storage>::Ref {
         sync_point(world, [self.sync_key]);
+        subscribe(world.into(), self.tracking_key);
         self.value.read(world.into())
     }
 
@@ -88,7 +90,9 @@ impl<T: Clone + Send + Sync + 'static> Var<T> {
     pub fn write(&mut self, world: &mut World) -> <AtomicRefCellStorage<T> as Storage>::RefMut {
         sync_point(world, [self.sync_key]);
 
+        subscribe(world.into(), self.tracking_key);
         let old = self.value.read(world.into()).clone();
+
         let mut value = self.value;
         let tracking_key = self.tracking_key;
         let caller = std::panic::Location::caller();
