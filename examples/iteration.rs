@@ -30,14 +30,7 @@ enum RoleFilter {
 
 fn main() {
     App::new()
-        .add_plugins((
-            MinimalPlugins,
-            LogPlugin {
-                filter: "info,iteration=debug".into(),
-                ..Default::default()
-            },
-            CaaqiPlugin,
-        ))
+        .add_plugins((MinimalPlugins, CaaqiPlugin))
         .add_systems(Startup, queue_eval)
         .run();
 }
@@ -105,15 +98,13 @@ fn queue_eval(commands: Commands) {
             }
         });
 
-        action(move || {
-            match *role_filter.read() {
-                RoleFilter::Everyone => {}
-                RoleFilter::Staff => {
-                    filtered.write().retain(|user| user.role == Role::Admin);
-                }
-                RoleFilter::Exact(role) => {
-                    filtered.write().retain(|user| user.role == role);
-                }
+        action(move || match *role_filter.read() {
+            RoleFilter::Everyone => {}
+            RoleFilter::Staff => {
+                filtered.write().retain(|user| user.role == Role::Admin);
+            }
+            RoleFilter::Exact(role) => {
+                filtered.write().retain(|user| user.role == role);
             }
         });
 
@@ -128,13 +119,9 @@ fn queue_eval(commands: Commands) {
         });
 
         action(move || {
-            let names: Vec<_> = filtered
-                .read()
-                .iter()
-                .map(|user| user.name)
-                .collect();
+            let names: Vec<_> = filtered.read().iter().map(|user| user.name).collect();
 
-            bevy::log::debug!("Matching users: {names:?}");
+            println!("Matching users: {names:?}");
         });
 
         // Try different inputs: these narrow the initial five users to David.

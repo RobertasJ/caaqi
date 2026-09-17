@@ -12,6 +12,9 @@ caaqi_context = { package = "caaqi-context", path = "caaqi_context" }
 env_logger = "0.11.11"
 bevy_caaqi = { package = "bevy_caaqi", path = "bevy_caaqi" }
 
+[dev-dependencies]
+slotmap = { version = "1.1" }
+
 [workspace.dependencies]
 bevy = { version = "0.19", default-features = false }
 smallvec = "1.15.2"

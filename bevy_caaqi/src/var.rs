@@ -58,7 +58,7 @@ impl<T: Clone + Send + Sync + 'static> Var<T> {
         caller: &'static Location<'static>,
         value: T,
     ) -> Self {
-        let value = Value::new_with_caller(world, caller, value);
+        let value = Value::from_value_with_caller(world, caller, value);
         let sync_key = create_sync_key(world);
         let tracking_key = TrackingKey::new(world);
         Var {

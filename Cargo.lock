@@ -1945,6 +1945,7 @@ dependencies = [
  "bevy_caaqi",
  "caaqi-context",
  "env_logger",
+ "slotmap",
 ]
 
 [[package]]

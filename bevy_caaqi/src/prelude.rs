@@ -263,3 +263,92 @@ impl<T: Clone + Send + Sync + 'static> Var<T> {
         WorldContext::with_world(|world| self.0.write(world))
     }
 }
+
+pub struct Value<T: Send + Sync + 'static, S: Storage = AtomicRefCellStorage<T>>(
+    crate::value::Value<T, S>,
+);
+
+impl<T: Send + Sync + 'static, S: Storage> Clone for Value<T, S> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<T: Send + Sync + 'static, S: Storage> Copy for Value<T, S> {}
+
+impl<T: Send + Sync + 'static, S: Storage> std::hash::Hash for Value<T, S> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+impl<T: Send + Sync + 'static, S: Storage> PartialEq for Value<T, S> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl<T: Send + Sync + 'static, S: Storage> Eq for Value<T, S> {}
+
+#[track_caller]
+pub fn value<T: Send + Sync + 'static>(value: T) -> Value<T> {
+    let value = Value::new(value);
+
+    rewind(move || {
+        value.remove();
+    });
+
+    value
+}
+
+impl<T: Send + Sync + 'static> Value<T> {
+    pub fn new_with_caller(caller: &'static Location<'static>, value: T) -> Self {
+        WorldContext::with_world(|world| {
+            Self(crate::value::Value::from_value_with_caller(
+                world, caller, value,
+            ))
+        })
+    }
+
+    #[track_caller]
+    pub fn new(value: T) -> Self {
+        Self::new_with_caller(Location::caller(), value)
+    }
+}
+
+impl<T: Send + Sync + 'static, S: Storage<Value = T>> Value<T, S> {
+    pub fn new_with_storage_with_caller(caller: &'static Location<'static>, value: T) -> Self {
+        WorldContext::with_world(|world| {
+            Self(crate::value::Value::from_value_with_storage_with_caller(
+                world, caller, value,
+            ))
+        })
+    }
+
+    #[track_caller]
+    pub fn new_with_storage(value: T) -> Self {
+        Self::new_with_storage_with_caller(Location::caller(), value)
+    }
+
+    pub fn remove(self) {
+        WorldContext::with_world(|world| {
+            self.0.remove(world);
+        })
+    }
+
+    pub fn try_read(&self) -> Result<<S as Storage>::Ref, ValueReadError<S, T>> {
+        WorldContext::with_deferred_world(|world| self.0.try_read(world))
+    }
+
+    pub fn try_write(&mut self) -> Result<<S as Storage>::RefMut, ValueWriteError<S, T>> {
+        WorldContext::with_deferred_world(|world| self.0.try_write(world))
+    }
+
+    pub fn read(&self) -> <S as Storage>::Ref {
+        WorldContext::with_deferred_world(|world| self.0.read(world))
+    }
+
+    pub fn write(&mut self) -> <S as Storage>::RefMut {
+        WorldContext::with_deferred_world(|world| self.0.write(world))
+    }
+}
