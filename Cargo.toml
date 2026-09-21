@@ -1,2 +1,14 @@
+[package]
+name = "caaqi-testing"
+version = "0.1.0"
+edition = "2024"
+
 [workspace]
 members = ["caaqi"]
+
+[dependencies]
+caaqi.workspace = true
+
+
+[workspace.dependencies]
+caaqi = { path = "caaqi" }
