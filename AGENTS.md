@@ -26,6 +26,8 @@ caaqi is a Rust library for rewindable, self-adjusting computation with fine-gra
 
 ## Commands
 
+Use `jj` instead of `git` for version-control operations, including status, diffs, and history.
+
 Use the repository's `justfile` commands from the workspace root:
 
 ```sh

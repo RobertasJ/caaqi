@@ -16,22 +16,22 @@ impl<O> AnyAction<O> {
         }
     }
 
-    fn run(&mut self, s: &mut ActionContext) -> Result<O, SelfAdjust> {
-        self.action.run(s)
+    fn run(&mut self, ctx: &mut ActionContext) -> Result<O, SelfAdjust> {
+        self.action.run(ctx)
     }
 }
 
 pub trait Action {
     type Output;
 
-    fn run(&mut self, s: &mut ActionContext) -> Result<Self::Output, SelfAdjust>;
+    fn run(&mut self, ctx: &mut ActionContext) -> Result<Self::Output, SelfAdjust>;
 }
 
 impl<F: FnMut(&mut ActionContext) -> Result<T, SelfAdjust>, T> Action for F {
     type Output = T;
 
-    fn run(&mut self, s: &mut ActionContext) -> Result<Self::Output, SelfAdjust> {
-        self(s)
+    fn run(&mut self, ctx: &mut ActionContext) -> Result<Self::Output, SelfAdjust> {
+        self(ctx)
     }
 }
 
@@ -179,6 +179,26 @@ impl ActionContext {
         self.tracked
             .get(key)
             .is_some_and(|tracked| tracked.contains(&tracking_id))
+    }
+
+    pub fn any_ancestor_contains_tracked(&self, tracking_id: TrackingId) -> bool {
+        let mut ancestor = self
+            .current_action
+            .and_then(|key| self.relationships.get(key))
+            .and_then(|relationship| relationship.parent);
+
+        while let Some(key) = ancestor {
+            if self.contains_tracked(key, tracking_id) {
+                return true;
+            }
+
+            ancestor = self
+                .relationships
+                .get(key)
+                .and_then(|relationship| relationship.parent);
+        }
+
+        false
     }
 
     pub fn run<A: Action<Output = ()> + 'static>(&mut self, action: A) -> Result<(), SelfAdjust> {

@@ -5,10 +5,10 @@ use caaqi::{
 
 fn main() {
     let mut action_context = ActionContext::new();
-    run_action(&mut action_context, |s: &mut ActionContext| {
+    run_action(&mut action_context, |ctx: &mut ActionContext| {
         println!("hello there");
 
-        run_action(s, |s: &mut ActionContext| {
+        run_action(ctx, |ctx: &mut ActionContext| {
             println!("hello again");
 
             finish()

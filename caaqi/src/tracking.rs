@@ -11,7 +11,8 @@ impl TrackingId {
         Self(Id::new())
     }
 
-    pub fn notify(&self, s: &mut ActionContext) -> Result<(), SelfAdjust> {
+    pub fn notify(&self, ctx: &mut ActionContext) -> Result<(), SelfAdjust> {
+        if ctx.any_ancestor_contains_tracked(*self) {}
         todo!()
     }
 }
