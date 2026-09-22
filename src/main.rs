@@ -1,22 +1,20 @@
 use caaqi::{
-    action::{ActionState, ActiveActionState, finish},
+    action::{ActionContext, ActionRelationship, finish},
     runner::run_action,
 };
 
 fn main() {
-    run_action(
-        &mut ActiveActionState::new(),
-        |s: &mut ActiveActionState| {
-            println!("hello there");
+    let mut action_context = ActionContext::new();
+    run_action(&mut action_context, |s: &mut ActionContext| {
+        println!("hello there");
 
-            run_action(s, |s: &mut ActiveActionState| {
-                println!("hello again");
-
-                finish()
-            })?;
+        run_action(s, |s: &mut ActionContext| {
+            println!("hello again");
 
             finish()
-        },
-    )
+        })?;
+
+        finish()
+    })
     .unwrap();
 }
