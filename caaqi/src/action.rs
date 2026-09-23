@@ -1,13 +1,9 @@
-use std::{
-    any::{Any, TypeId},
-    collections::{HashMap, HashSet},
-    panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
-};
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 
 use slotmap::{SecondaryMap, SlotMap, new_key_type};
 use smallvec::SmallVec;
 
-use crate::tracking::TrackingId;
+use crate::{context::Context, tracking::TrackingId};
 
 struct AnyAction<O> {
     action: Box<dyn Action<Output = O> + 'static>,
@@ -20,7 +16,7 @@ impl<O> AnyAction<O> {
         }
     }
 
-    fn run(&mut self, ctx: &mut ActionContext) -> Result<O, SelfAdjust> {
+    fn run(&mut self, ctx: &mut Context) -> Result<O, SelfAdjust> {
         self.action.run(ctx)
     }
 }
@@ -28,13 +24,13 @@ impl<O> AnyAction<O> {
 pub trait Action {
     type Output;
 
-    fn run(&mut self, ctx: &mut ActionContext) -> Result<Self::Output, SelfAdjust>;
+    fn run(&mut self, ctx: &mut Context) -> Result<Self::Output, SelfAdjust>;
 }
 
-impl<F: FnMut(&mut ActionContext) -> Result<T, SelfAdjust>, T> Action for F {
+impl<F: FnMut(&mut Context) -> Result<T, SelfAdjust>, T> Action for F {
     type Output = T;
 
-    fn run(&mut self, ctx: &mut ActionContext) -> Result<Self::Output, SelfAdjust> {
+    fn run(&mut self, ctx: &mut Context) -> Result<Self::Output, SelfAdjust> {
         self(ctx)
     }
 }
@@ -56,12 +52,13 @@ new_key_type! {
     pub struct ActionNodeKey;
 }
 
-pub struct ActionContext {
+/// The action tree resource. Its read methods are public so other modules can
+/// build on it; mutation goes through [`ActionTreeExt`].
+#[derive(Default)]
+pub struct ActionTree {
     relationships: SlotMap<ActionNodeKey, ActionRelationship>,
     action_nodes: SecondaryMap<ActionNodeKey, AnyAction<()>>,
-    tracked: SecondaryMap<ActionNodeKey, HashSet<TrackingId>>,
     current_action: Option<ActionNodeKey>,
-    data: HashMap<TypeId, Box<dyn Any>>,
 }
 
 struct ActionRelationship {
@@ -69,68 +66,89 @@ struct ActionRelationship {
     parent: Option<ActionNodeKey>,
 }
 
-impl ActionContext {
-    pub fn new() -> Self {
-        Self {
-            relationships: SlotMap::with_key(),
-            action_nodes: SecondaryMap::new(),
-            tracked: SecondaryMap::new(),
-            current_action: None,
-            data: HashMap::new(),
+impl ActionTree {
+    pub fn current_action(&self) -> Option<ActionNodeKey> {
+        self.current_action
+    }
+
+    pub fn parent(&self, key: ActionNodeKey) -> Option<ActionNodeKey> {
+        self.relationships
+            .get(key)
+            .and_then(|relationship| relationship.parent)
+    }
+
+    pub fn children(&self, key: ActionNodeKey) -> &[ActionNodeKey] {
+        self.relationships
+            .get(key)
+            .map_or(&[], |relationship| &relationship.sub_actions)
+    }
+
+    /// Walks up from the parent of `key` to its root.
+    pub fn ancestors(&self, key: ActionNodeKey) -> impl Iterator<Item = ActionNodeKey> + '_ {
+        std::iter::successors(self.parent(key), |&key| self.parent(key))
+    }
+
+    /// Iterates the descendants of `key`, each before its own descendants.
+    pub fn descendants_top_down(
+        &self,
+        key: ActionNodeKey,
+    ) -> impl Iterator<Item = ActionNodeKey> + '_ {
+        let mut pending: Vec<_> = self.children(key).iter().rev().copied().collect();
+        std::iter::from_fn(move || {
+            let key = pending.pop()?;
+            pending.extend(self.children(key).iter().rev());
+            Some(key)
+        })
+    }
+
+    /// Iterates the descendants of `key`, each after its own descendants.
+    pub fn descendants_bottom_up(
+        &self,
+        key: ActionNodeKey,
+    ) -> impl Iterator<Item = ActionNodeKey> + '_ {
+        // `true` once a node's children have been pushed above it.
+        let mut pending: Vec<_> = self
+            .children(key)
+            .iter()
+            .rev()
+            .map(|&key| (key, false))
+            .collect();
+        std::iter::from_fn(move || {
+            loop {
+                let (key, expanded) = pending.pop()?;
+                if expanded {
+                    return Some(key);
+                }
+                pending.push((key, true));
+                pending.extend(self.children(key).iter().rev().map(|&key| (key, false)));
+            }
+        })
+    }
+
+    pub fn is_executing(&self, key: ActionNodeKey) -> bool {
+        // An executing action's body is borrowed out of `action_nodes`.
+        self.relationships.contains_key(key) && !self.action_nodes.contains_key(key)
+    }
+
+    pub fn has_executing_descendant(&self, key: ActionNodeKey) -> bool {
+        self.descendants_top_down(key)
+            .any(|key| self.is_executing(key))
+    }
+
+    /// Removes every descendant of `key`, returning the removed keys bottom up.
+    pub fn remove_descendants(&mut self, key: ActionNodeKey) -> Vec<ActionNodeKey> {
+        let removed: Vec<_> = self.descendants_bottom_up(key).collect();
+        for &key in &removed {
+            self.relationships.remove(key);
+            self.action_nodes.remove(key);
         }
+        if let Some(relationship) = self.relationships.get_mut(key) {
+            relationship.sub_actions.clear();
+        }
+        removed
     }
 
-    // User data is a type-map: one value per type, global to the context. It
-    // survives reruns and descendant removal, and is dropped only by `remove`.
-    // Returned references borrow the context, so they can't be held across
-    // `run`; drop the borrow first, or `remove` + `insert` around a nested run.
-
-    /// Stores `value`, returning the previous value of the same type.
-    pub fn insert<T: 'static>(&mut self, value: T) -> Option<T> {
-        self.data
-            .insert(TypeId::of::<T>(), Box::new(value))
-            .map(downcast)
-    }
-
-    pub fn get<T: 'static>(&self) -> Option<&T> {
-        self.data
-            .get(&TypeId::of::<T>())
-            .map(|value| value.downcast_ref().expect("data is keyed by its type"))
-    }
-
-    pub fn get_mut<T: 'static>(&mut self) -> Option<&mut T> {
-        self.data
-            .get_mut(&TypeId::of::<T>())
-            .map(|value| value.downcast_mut().expect("data is keyed by its type"))
-    }
-
-    pub fn get_or_insert_with<T: 'static>(&mut self, f: impl FnOnce() -> T) -> &mut T {
-        self.data
-            .entry(TypeId::of::<T>())
-            .or_insert_with(|| Box::new(f()))
-            .downcast_mut()
-            .expect("data is keyed by its type")
-    }
-
-    pub fn remove<T: 'static>(&mut self) -> Option<T> {
-        self.data.remove(&TypeId::of::<T>()).map(downcast)
-    }
-
-    /// Creates a root, even when another action is executing.
-    pub fn create_root(&mut self, action: impl Action<Output = ()> + 'static) -> ActionNodeKey {
-        self.insert_action(action, None)
-    }
-
-    /// Creates a child of the executing action, or returns `None` outside execution.
-    pub fn create_child(
-        &mut self,
-        action: impl Action<Output = ()> + 'static,
-    ) -> Option<ActionNodeKey> {
-        let parent = self.current_action?;
-        Some(self.insert_action(action, Some(parent)))
-    }
-
-    fn insert_action(
+    fn insert(
         &mut self,
         action: impl Action<Output = ()> + 'static,
         parent: Option<ActionNodeKey>,
@@ -141,116 +159,100 @@ impl ActionContext {
             parent,
         });
         self.action_nodes.insert(key, AnyAction::new(action));
-        self.tracked.insert(key, HashSet::new());
         if let Some(parent) = parent {
             self.relationships[parent].sub_actions.push(key);
         }
         key
     }
+}
 
-    fn contains_tracked(&self, key: ActionNodeKey, tracking_id: TrackingId) -> bool {
-        self.tracked
-            .get(key)
-            .is_some_and(|tracked| tracked.contains(&tracking_id))
-    }
+fn tree_mut(ctx: &mut Context) -> &mut ActionTree {
+    ctx.get_or_insert_with(ActionTree::default)
+}
 
-    /// Returns a [`SelfAdjust`] if any ancestor of the executing action tracks
-    /// `tracking_id`, so callers can bail out with `?`; otherwise `Ok(())`.
-    pub fn adjust_if_ancestor_tracks(&self, tracking_id: TrackingId) -> Result<(), SelfAdjust> {
-        if self.any_ancestor_contains_tracked(tracking_id) {
-            Err(SelfAdjust::new(tracking_id))
-        } else {
-            Ok(())
-        }
-    }
+pub trait ActionTreeExt {
+    /// Creates a root, even when another action is executing.
+    fn create_root(&mut self, action: impl Action<Output = ()> + 'static) -> ActionNodeKey;
 
-    fn any_ancestor_contains_tracked(&self, tracking_id: TrackingId) -> bool {
-        let mut ancestor = self
-            .current_action
-            .and_then(|key| self.relationships.get(key))
-            .and_then(|relationship| relationship.parent);
-
-        while let Some(key) = ancestor {
-            if self.contains_tracked(key, tracking_id) {
-                return true;
-            }
-
-            ancestor = self
-                .relationships
-                .get(key)
-                .and_then(|relationship| relationship.parent);
-        }
-
-        false
-    }
+    /// Creates a child of the executing action, or returns `None` outside execution.
+    fn create_child(&mut self, action: impl Action<Output = ()> + 'static)
+    -> Option<ActionNodeKey>;
 
     /// Creates and immediately runs an action as a child of the executing
     /// action, or as a root outside execution.
-    pub fn run<A: Action<Output = ()> + 'static>(
-        &mut self,
-        action: A,
-    ) -> Result<(), SelfAdjust> {
-        let key = self.insert_action(action, self.current_action);
-        self.run_action(key)
-            .expect("new action is available to run")
+    fn run(&mut self, action: impl Action<Output = ()> + 'static) -> Result<(), SelfAdjust>;
+
+    /// Whether `key` exists, isn't executing, and has no executing descendant.
+    fn can_run(&self, key: ActionNodeKey) -> bool;
+
+    /// Removes every descendant of `key`, returning the removed keys so
+    /// callers can clean up their own per-node data.
+    fn clear_children(&mut self, key: ActionNodeKey) -> Vec<ActionNodeKey>;
+
+    /// Runs an existing action without clearing it first. Returns `None` for
+    /// an unknown key, an executing action, or one that still has children.
+    fn execute(&mut self, key: ActionNodeKey) -> Option<Result<(), SelfAdjust>>;
+
+    /// Reruns an existing action: clears its children, then executes it.
+    /// Returns `None` unless [`can_run`](Self::can_run).
+    fn run_action(&mut self, key: ActionNodeKey) -> Option<Result<(), SelfAdjust>>;
+}
+
+impl ActionTreeExt for Context {
+    fn create_root(&mut self, action: impl Action<Output = ()> + 'static) -> ActionNodeKey {
+        tree_mut(self).insert(action, None)
     }
 
-    /// Runs an existing action. Returns `None` for an unknown key or an action
-    /// that is already executing (its body is temporarily borrowed by that run),
-    /// or one with an executing descendant.
-    ///
-    /// All descendants from a previous run are removed first, so the rerun
-    /// rebuilds its children from scratch.
-    pub fn run_action(&mut self, key: ActionNodeKey) -> Option<Result<(), SelfAdjust>> {
-        if self.has_executing_descendant(key) {
+    fn create_child(
+        &mut self,
+        action: impl Action<Output = ()> + 'static,
+    ) -> Option<ActionNodeKey> {
+        let tree = tree_mut(self);
+        let parent = tree.current_action?;
+        Some(tree.insert(action, Some(parent)))
+    }
+
+    fn run(&mut self, action: impl Action<Output = ()> + 'static) -> Result<(), SelfAdjust> {
+        let tree = tree_mut(self);
+        let key = tree.insert(action, tree.current_action);
+        self.execute(key).expect("new action is available to run")
+    }
+
+    fn can_run(&self, key: ActionNodeKey) -> bool {
+        self.get::<ActionTree>().is_some_and(|tree| {
+            tree.action_nodes.contains_key(key) && !tree.has_executing_descendant(key)
+        })
+    }
+
+    fn clear_children(&mut self, key: ActionNodeKey) -> Vec<ActionNodeKey> {
+        tree_mut(self).remove_descendants(key)
+    }
+
+    fn execute(&mut self, key: ActionNodeKey) -> Option<Result<(), SelfAdjust>> {
+        let tree = tree_mut(self);
+        // No children also means no executing descendant.
+        if !tree.children(key).is_empty() {
             return None;
         }
-        let mut action = self.action_nodes.remove(key)?;
-        self.remove_descendants(key);
-        let previous_action = self.current_action.replace(key);
+        let mut action = tree.action_nodes.remove(key)?;
+        let previous_action = tree.current_action.replace(key);
         let result = catch_unwind(AssertUnwindSafe(|| action.run(self)));
-        self.current_action = previous_action;
-        self.action_nodes.insert(key, action);
+        let tree = tree_mut(self);
+        tree.current_action = previous_action;
+        tree.action_nodes.insert(key, action);
         match result {
             Ok(result) => Some(result),
             Err(panic) => resume_unwind(panic),
         }
     }
 
-    fn has_executing_descendant(&self, key: ActionNodeKey) -> bool {
-        let Some(relationship) = self.relationships.get(key) else {
-            return false;
-        };
-        let mut pending: Vec<_> = relationship.sub_actions.to_vec();
-        while let Some(key) = pending.pop() {
-            // An executing action's body is borrowed out of `action_nodes`.
-            if !self.action_nodes.contains_key(key) {
-                return true;
-            }
-            if let Some(relationship) = self.relationships.get(key) {
-                pending.extend_from_slice(&relationship.sub_actions);
-            }
+    fn run_action(&mut self, key: ActionNodeKey) -> Option<Result<(), SelfAdjust>> {
+        if !self.can_run(key) {
+            return None;
         }
-        false
+        self.clear_children(key);
+        self.execute(key)
     }
-
-    fn remove_descendants(&mut self, key: ActionNodeKey) {
-        let Some(relationship) = self.relationships.get_mut(key) else {
-            return;
-        };
-        let mut pending: Vec<_> = std::mem::take(&mut relationship.sub_actions).into_vec();
-        while let Some(key) = pending.pop() {
-            if let Some(relationship) = self.relationships.remove(key) {
-                pending.extend(relationship.sub_actions);
-            }
-            self.action_nodes.remove(key);
-            self.tracked.remove(key);
-        }
-    }
-}
-
-fn downcast<T: 'static>(value: Box<dyn Any>) -> T {
-    *value.downcast().expect("data is keyed by its type")
 }
 
 pub fn finish_with<T>(val: T) -> Result<T, SelfAdjust> {
