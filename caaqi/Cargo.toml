@@ -7,3 +7,7 @@ edition = "2024"
 slotmap = "1.1"
 scoped-tls-hkt = "0.1"
 smallvec = "1.16"
+thiserror = "2.0.21"
+
+[dev-dependencies]
+googletest = "0.14.3"
