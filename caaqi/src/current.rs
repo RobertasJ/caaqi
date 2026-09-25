@@ -1,6 +1,9 @@
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 
-use crate::{action_tree::ActionNodeKey, context::Context};
+use crate::{
+    action_tree::{ActionNodeKey, ActionTree, UnknownNode},
+    context::Context,
+};
 
 /// The current-action resource, shared by every runner so they agree on which
 /// action is executing.
@@ -13,11 +16,14 @@ pub trait CurrentActionExt {
 
     /// Runs `f` with `key` as the current action, restoring the previous one
     /// afterwards, even if `f` panics.
+    ///
+    /// Refusing unknown keys keeps the current action in the tree, since
+    /// executing nodes can't be removed.
     fn with_current_action<R>(
         &mut self,
         key: ActionNodeKey,
         f: impl FnOnce(&mut Context) -> R,
-    ) -> R;
+    ) -> Result<R, UnknownNode>;
 }
 
 impl CurrentActionExt for Context {
@@ -29,7 +35,8 @@ impl CurrentActionExt for Context {
         &mut self,
         key: ActionNodeKey,
         f: impl FnOnce(&mut Context) -> R,
-    ) -> R {
+    ) -> Result<R, UnknownNode> {
+        self.get_or_insert_with(ActionTree::default).node(key)?;
         let previous = self
             .get_or_insert_with(CurrentAction::default)
             .0
@@ -37,8 +44,30 @@ impl CurrentActionExt for Context {
         let result = catch_unwind(AssertUnwindSafe(|| f(self)));
         self.get_or_insert_with(CurrentAction::default).0 = previous;
         match result {
-            Ok(result) => result,
+            Ok(result) => Ok(result),
             Err(panic) => resume_unwind(panic),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use googletest::prelude::*;
+
+    use super::*;
+    use crate::action_tree::ActionTreeExt;
+
+    #[gtest]
+    fn unknown_keys_are_refused_without_running() {
+        let mut ctx = Context::new();
+        let removed = ctx.create_root();
+        ctx.remove_node(removed).unwrap();
+
+        let mut ran = false;
+        let result = ctx.with_current_action(removed, |_| ran = true);
+
+        expect_that!(result, err(eq(UnknownNode(removed))));
+        expect_false!(ran);
+        expect_that!(ctx.current_action(), none());
     }
 }

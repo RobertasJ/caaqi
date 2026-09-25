@@ -20,8 +20,8 @@ fn main() {
     });
     println!("counter: {}", ctx.get::<Counter>().unwrap().0);
 
-    let members = |ctx: &Context| ctx.get::<Groups>().unwrap().members(group).count();
+    let members = |ctx: &Context| ctx.get::<Groups>().unwrap().members(group).unwrap().count();
     println!("group members: {}", members(&ctx));
-    ctx.clear_children(root);
+    ctx.clear_children(root).unwrap();
     println!("group members after clearing: {}", members(&ctx));
 }

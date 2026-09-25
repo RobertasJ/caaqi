@@ -1,4 +1,4 @@
-use std::any::TypeId;
+use std::{any::TypeId, collections::HashMap};
 
 use crate::{action_tree::ActionNodeKey, context::Context};
 
@@ -18,15 +18,14 @@ pub trait NodeObserver: 'static {
 
 #[derive(Clone, Copy)]
 struct Registration {
-    observer: TypeId,
     node_added: fn(&mut Context, ActionNodeKey),
     nodes_removed: fn(&mut Context, &[ActionNodeKey]),
 }
 
-/// The lifecycle resource: every registered [`NodeObserver`], in registration
-/// order.
+/// The lifecycle resource: every registered [`NodeObserver`], keyed by its
+/// type. Notification order is unspecified.
 #[derive(Default)]
-pub struct NodeObservers(Vec<Registration>);
+pub struct NodeObservers(HashMap<TypeId, Registration>);
 
 pub trait LifecycleExt {
     /// Registers `O` to be notified of tree changes. Returns `false` if it was
@@ -37,31 +36,29 @@ pub trait LifecycleExt {
 impl LifecycleExt for Context {
     fn observe_nodes<O: NodeObserver>(&mut self) -> bool {
         let observers = &mut self.get_or_insert_with(NodeObservers::default).0;
-        let observer = TypeId::of::<O>();
-        if observers
-            .iter()
-            .any(|registration| registration.observer == observer)
-        {
+        if observers.contains_key(&TypeId::of::<O>()) {
             return false;
         }
-        observers.push(Registration {
-            observer,
-            node_added: O::node_added,
-            nodes_removed: O::nodes_removed,
-        });
+        observers.insert(
+            TypeId::of::<O>(),
+            Registration {
+                node_added: O::node_added,
+                nodes_removed: O::nodes_removed,
+            },
+        );
         true
     }
 }
 
 /// Copied out so observers can use the whole context, including registering
 /// more observers, while being notified.
-fn registrations(ctx: &Context) -> Vec<Registration> {
+fn registrations(ctx: &Context) -> HashMap<TypeId, Registration> {
     ctx.get::<NodeObservers>()
-        .map_or_else(Vec::new, |observers| observers.0.clone())
+        .map_or_else(HashMap::new, |observers| observers.0.clone())
 }
 
 pub(crate) fn notify_node_added(ctx: &mut Context, key: ActionNodeKey) {
-    for registration in registrations(ctx) {
+    for registration in registrations(ctx).into_values() {
         (registration.node_added)(ctx, key);
     }
 }
@@ -70,7 +67,7 @@ pub(crate) fn notify_nodes_removed(ctx: &mut Context, keys: &[ActionNodeKey]) {
     if keys.is_empty() {
         return;
     }
-    for registration in registrations(ctx) {
+    for registration in registrations(ctx).into_values() {
         (registration.nodes_removed)(ctx, keys);
     }
 }

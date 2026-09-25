@@ -1,5 +1,5 @@
 use crate::{
-    action_tree::{ActionNodeKey, ActionTreeExt},
+    action_tree::{ActionNodeKey, ActionTreeExt, NotExecuting},
     context::Context,
     current::CurrentActionExt,
 };
@@ -29,8 +29,12 @@ pub trait ActionExt {
 
 impl ActionExt for Context {
     fn run_node<A: Action>(&mut self, mut action: A) -> (ActionNodeKey, A::Output) {
-        let key = self.create_child().unwrap_or_else(|| self.create_root());
-        let output = self.with_current_action(key, |ctx| action.run(ctx));
+        let key = self
+            .create_child()
+            .unwrap_or_else(|NotExecuting| self.create_root());
+        let output = self
+            .with_current_action(key, |ctx| action.run(ctx))
+            .expect("the node was just created");
         (key, output)
     }
 }

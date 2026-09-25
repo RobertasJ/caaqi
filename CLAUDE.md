@@ -70,6 +70,15 @@ New subsystems should follow the same pattern: a resource type fetched lazily wi
 
 - Preserve the action-tree invariant: a child has one parent, and the parent's `sub_actions` list reflects that relationship. Only freshly inserted nodes get parented, which is what prevents cycles.
 - Preserve the current action during nested execution by going through `with_current_action`, which restores the previous value on every exit path (including panics and, later, self-adjustment).
+- No method may silently do nothing, or return an empty or default result, when its input is invalid (an unknown node key, an unknown group, and so on). Check inside the method that relies on the input, return a specific error, and let callers pass it up with `?`. Don't rely on a caller having validated the input first. Don't add standalone "ensure it exists" helpers either. Code in another module calls the owning resource's fallible accessor (such as `ActionTree::node`) and passes its error up with `?`. Panic (`expect` / `assert!`) only when a broken internal invariant makes the input impossible, never for bad caller input.
 - Keep public APIs explicit and context-based. Do not introduce hook lifecycle abstractions.
 - Export new public items users need through `lib.rs`'s `prelude`.
 - Keep changes focused and avoid manually editing generated files.
+
+## TODOs
+
+There are different kinds of TODOs; pick the one that matches how urgent it is:
+
+- **`// TODO: ...` comment**: a note for later that nothing forces anyone to act on.
+- **`todo!()`**: marks unfinished code. It compiles but panics when that code runs.
+- **`compile_error!("TODO: ...")`**: a mandatory TODO. The build fails until someone deals with it and deletes the line. Use it when the user asks for a TODO they must not forget, for example a review they need to do before continuing work. Never add one unless the user asks for it, and never remove one without the user's approval.
