@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use slotmap::SecondaryMap;
 
 use crate::{
-    action_tree::{ActionNodeKey, ActionTree, UnknownNode},
+    action_tree::{ActionNodeKey, ActionTree, UnknownNode, tree_ref},
     context::Context,
     id::Id,
     lifecycle::{LifecycleExt, NodeObserver},
@@ -18,6 +18,14 @@ pub struct UnknownGroup(pub GroupId);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum AddToGroupError {
+    #[error(transparent)]
+    UnknownGroup(#[from] UnknownGroup),
+    #[error(transparent)]
+    UnknownNode(#[from] UnknownNode),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum GroupContainsError {
     #[error(transparent)]
     UnknownGroup(#[from] UnknownGroup),
     #[error(transparent)]
@@ -45,7 +53,7 @@ pub struct Groups {
 }
 
 impl Groups {
-    pub fn exists(&self, group: GroupId) -> bool {
+    fn exists(&self, group: GroupId) -> bool {
         self.members.contains_key(&group)
     }
 
@@ -53,20 +61,18 @@ impl Groups {
         self.members.get(&group).ok_or(UnknownGroup(group))
     }
 
-    pub fn contains(&self, group: GroupId, key: ActionNodeKey) -> Result<bool, UnknownGroup> {
+    fn contains(&self, group: GroupId, key: ActionNodeKey) -> Result<bool, UnknownGroup> {
         Ok(self.group(group)?.contains(&key))
     }
 
-    /// The members of `group`, in no particular order.
-    pub fn members(
+    fn members(
         &self,
         group: GroupId,
     ) -> Result<impl Iterator<Item = ActionNodeKey> + '_, UnknownGroup> {
         Ok(self.group(group)?.iter().copied())
     }
 
-    /// The groups `key` belongs to, in no particular order.
-    pub fn groups_of(&self, key: ActionNodeKey) -> impl Iterator<Item = GroupId> + '_ {
+    fn groups_of(&self, key: ActionNodeKey) -> impl Iterator<Item = GroupId> + '_ {
         self.memberships.get(key).into_iter().flatten().copied()
     }
 
@@ -144,6 +150,28 @@ fn groups_mut(ctx: &mut Context) -> &mut Groups {
 }
 
 pub trait GroupingExt {
+    /// Whether `group` exists.
+    fn group_exists(&self, group: GroupId) -> bool;
+
+    /// Whether `key` is a member of `group`.
+    fn group_contains(
+        &self,
+        group: GroupId,
+        key: ActionNodeKey,
+    ) -> Result<bool, GroupContainsError>;
+
+    /// The members of `group`, in no particular order.
+    fn group_members(
+        &self,
+        group: GroupId,
+    ) -> Result<impl Iterator<Item = ActionNodeKey> + '_, UnknownGroup>;
+
+    /// The groups `key` belongs to, in no particular order.
+    fn groups_of(
+        &self,
+        key: ActionNodeKey,
+    ) -> Result<impl Iterator<Item = GroupId> + '_, UnknownNode>;
+
     /// Creates an empty group.
     fn create_group(&mut self) -> GroupId;
 
@@ -162,7 +190,45 @@ pub trait GroupingExt {
     ) -> Result<bool, RemoveFromGroupError>;
 }
 
+/// The groups resource, for a read about `group`. Without it no group exists
+/// yet.
+fn groups(ctx: &Context, group: GroupId) -> Result<&Groups, UnknownGroup> {
+    ctx.get::<Groups>().ok_or(UnknownGroup(group))
+}
+
 impl GroupingExt for Context {
+    fn group_exists(&self, group: GroupId) -> bool {
+        self.get::<Groups>()
+            .is_some_and(|groups| groups.exists(group))
+    }
+
+    fn group_contains(
+        &self,
+        group: GroupId,
+        key: ActionNodeKey,
+    ) -> Result<bool, GroupContainsError> {
+        tree_ref(self, key)?.node(key)?;
+        Ok(groups(self, group)?.contains(group, key)?)
+    }
+
+    fn group_members(
+        &self,
+        group: GroupId,
+    ) -> Result<impl Iterator<Item = ActionNodeKey> + '_, UnknownGroup> {
+        groups(self, group)?.members(group)
+    }
+
+    fn groups_of(
+        &self,
+        key: ActionNodeKey,
+    ) -> Result<impl Iterator<Item = GroupId> + '_, UnknownNode> {
+        tree_ref(self, key)?.node(key)?;
+        Ok(self
+            .get::<Groups>()
+            .into_iter()
+            .flat_map(move |groups| groups.groups_of(key)))
+    }
+
     fn create_group(&mut self) -> GroupId {
         let group = GroupId(Id::new());
         groups_mut(self).members.insert(group, HashSet::new());
@@ -210,16 +276,12 @@ mod tests {
         current::CurrentActionExt,
     };
 
-    fn groups(ctx: &Context) -> &Groups {
-        ctx.get::<Groups>().expect("groups resource exists")
-    }
-
     fn members(ctx: &Context, group: GroupId) -> HashSet<ActionNodeKey> {
-        groups(ctx).members(group).unwrap().collect()
+        ctx.group_members(group).unwrap().collect()
     }
 
     fn groups_of(ctx: &Context, key: ActionNodeKey) -> HashSet<GroupId> {
-        groups(ctx).groups_of(key).collect()
+        ctx.groups_of(key).unwrap().collect()
     }
 
     /// Checks that `members` and `memberships` mirror each other exactly.
@@ -264,8 +326,8 @@ mod tests {
         let second = ctx.create_group();
 
         expect_ne!(first, second);
-        expect_true!(groups(&ctx).exists(first));
-        expect_true!(groups(&ctx).exists(second));
+        expect_true!(ctx.group_exists(first));
+        expect_true!(ctx.group_exists(second));
         expect_that!(members(&ctx, first), is_empty());
     }
 
@@ -275,7 +337,7 @@ mod tests {
         let group = ctx.create_group();
 
         expect_that!(ctx.remove_group(group), ok(is_empty()));
-        expect_false!(groups(&ctx).exists(group));
+        expect_false!(ctx.group_exists(group));
     }
 
     #[gtest]
@@ -462,7 +524,7 @@ mod tests {
             ctx.remove_group(removed),
             ok(unordered_elements_are![eq(&first), eq(&second)])
         );
-        expect_false!(groups(&ctx).exists(removed));
+        expect_false!(ctx.group_exists(removed));
         expect_that!(groups_of(&ctx, first), is_empty());
         expect_that!(groups_of(&ctx, second), { eq(&kept) });
         expect_consistent(&ctx);
@@ -479,7 +541,14 @@ mod tests {
 
         ctx.clear_children(a).unwrap();
         expect_that!(members(&ctx, group), {eq(&root), eq(&a), eq(&b)});
-        expect_that!(groups_of(&ctx, a_child), is_empty());
+        expect_that!(ctx.groups_of(a_child).err(), some(eq(UnknownNode(a_child))));
+        expect_that!(
+            ctx.get::<Groups>()
+                .unwrap()
+                .groups_of(a_child)
+                .collect::<Vec<_>>(),
+            is_empty()
+        );
         expect_consistent(&ctx);
     }
 
@@ -503,8 +572,8 @@ mod tests {
         ctx.remove_node(root).unwrap();
         expect_that!(members(&ctx, first), is_empty());
         expect_that!(members(&ctx, second), is_empty());
-        expect_true!(groups(&ctx).exists(first));
-        expect_true!(groups(&ctx).exists(second));
+        expect_true!(ctx.group_exists(first));
+        expect_true!(ctx.group_exists(second));
         expect_consistent(&ctx);
     }
 
@@ -544,7 +613,7 @@ mod tests {
                     )))
                 );
             });
-            expect_that!(groups(ctx).contains(group, root), ok(eq(true)));
+            expect_that!(ctx.group_contains(group, root), ok(eq(true)));
         });
         expect_consistent(&ctx);
     }

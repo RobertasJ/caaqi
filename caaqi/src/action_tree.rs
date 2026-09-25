@@ -3,7 +3,7 @@ use smallvec::SmallVec;
 
 use crate::{
     context::Context,
-    current::CurrentActionExt,
+    current::{CurrentActionExt, NotExecuting},
     lifecycle::{notify_node_added, notify_nodes_removed},
 };
 
@@ -14,10 +14,6 @@ new_key_type! {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("action node {0:?} isn't in the action tree")]
 pub struct UnknownNode(pub ActionNodeKey);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("no action is executing")]
-pub struct NotExecuting;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("action node {0:?} is executing")]
@@ -46,9 +42,8 @@ pub enum RemoveNodeError {
 /// The action tree resource. It holds only the shape of the tree; per-node
 /// data lives in other resources keyed by [`ActionNodeKey`].
 ///
-/// Its read methods are public so other modules can build on it; mutation goes
-/// through [`ActionTreeExt`] so [node observers](crate::lifecycle::NodeObserver)
-/// are notified.
+/// Everything public goes through [`ActionTreeExt`], so mutation notifies
+/// [node observers](crate::lifecycle::NodeObserver).
 #[derive(Default)]
 pub struct ActionTree {
     nodes: SlotMap<ActionNodeKey, ActionNode>,
@@ -59,8 +54,92 @@ pub(crate) struct ActionNode {
     parent: Option<ActionNodeKey>,
 }
 
+/// A walk over a node and its descendants, each before its own descendants.
+/// [`skip_children`](Self::skip_children) keeps the walk out of the children
+/// of the node it just returned.
+///
+/// It borrows the tree; use [`into_cursor`](Self::into_cursor) to walk while
+/// changing the context.
+pub struct TopDownWalk<'a> {
+    tree: &'a ActionTree,
+    cursor: TopDownCursor,
+}
+
+impl TopDownWalk<'_> {
+    /// Skips the descendants of the node `next` returned last. Does nothing
+    /// before the first `next`, or when called twice in a row.
+    pub fn skip_children(&mut self) {
+        self.cursor.skip_children();
+    }
+
+    /// Continues this walk without borrowing the tree.
+    pub fn into_cursor(self) -> TopDownCursor {
+        self.cursor
+    }
+}
+
+impl Iterator for TopDownWalk<'_> {
+    type Item = ActionNodeKey;
+
+    fn next(&mut self) -> Option<ActionNodeKey> {
+        self.cursor.next_in(self.tree)
+    }
+}
+
+/// A [`TopDownWalk`] that doesn't borrow the tree: each
+/// [`next`](Self::next) takes the context instead, so the context can be
+/// changed between calls.
+///
+/// A node's children are read on the `next` call after it's returned, so a
+/// node rerun in between has its new children walked, unless
+/// [`skip_children`](Self::skip_children) is called. Nodes removed in between
+/// are skipped.
+pub struct TopDownCursor {
+    pending: Vec<ActionNodeKey>,
+    /// The node returned last, whose children haven't been queued yet.
+    /// They're queued on the next `next` call, so `skip_children` can drop
+    /// them first.
+    last: Option<ActionNodeKey>,
+    siblings_rev: bool,
+}
+
+impl TopDownCursor {
+    /// Skips the descendants of the node `next` returned last. Does nothing
+    /// before the first `next`, or when called twice in a row.
+    pub fn skip_children(&mut self) {
+        self.last = None;
+    }
+
+    /// The next node of the walk, or `None` once it's done.
+    pub fn next(&mut self, ctx: &Context) -> Option<ActionNodeKey> {
+        // Without a tree, every node has been removed.
+        let Some(tree) = ctx.get::<ActionTree>() else {
+            self.pending.clear();
+            self.last = None;
+            return None;
+        };
+        self.next_in(tree)
+    }
+
+    fn next_in(&mut self, tree: &ActionTree) -> Option<ActionNodeKey> {
+        if let Some(node) = self.last.take().and_then(|last| tree.nodes.get(last)) {
+            let children = node.sub_actions.iter().copied();
+            if self.siblings_rev {
+                self.pending.extend(children);
+            } else {
+                self.pending.extend(children.rev());
+            }
+        }
+        // Nodes removed since they were queued are skipped, along with their
+        // descendants, which were removed with them.
+        let key = std::iter::from_fn(|| self.pending.pop()).find(|&key| tree.contains(key))?;
+        self.last = Some(key);
+        Some(key)
+    }
+}
+
 impl ActionTree {
-    pub fn contains(&self, key: ActionNodeKey) -> bool {
+    fn contains(&self, key: ActionNodeKey) -> bool {
         self.nodes.contains_key(key)
     }
 
@@ -68,17 +147,15 @@ impl ActionTree {
         self.nodes.get(key).ok_or(UnknownNode(key))
     }
 
-    /// The parent of `key`, or `None` for a root.
-    pub fn parent(&self, key: ActionNodeKey) -> Result<Option<ActionNodeKey>, UnknownNode> {
+    fn parent(&self, key: ActionNodeKey) -> Result<Option<ActionNodeKey>, UnknownNode> {
         Ok(self.node(key)?.parent)
     }
 
-    pub fn children(&self, key: ActionNodeKey) -> Result<&[ActionNodeKey], UnknownNode> {
+    fn children(&self, key: ActionNodeKey) -> Result<&[ActionNodeKey], UnknownNode> {
         Ok(&self.node(key)?.sub_actions)
     }
 
-    /// Walks up from the parent of `key` to its root.
-    pub fn ancestors(
+    fn ancestors(
         &self,
         key: ActionNodeKey,
     ) -> Result<impl Iterator<Item = ActionNodeKey> + '_, UnknownNode> {
@@ -87,44 +164,33 @@ impl ActionTree {
         Ok(std::iter::successors(parent, |&key| self.nodes[key].parent))
     }
 
-    /// Iterates the descendants of `key`, each before its own descendants,
+    /// Iterates `key` and its descendants, each before its own descendants,
     /// siblings last to first when `siblings_rev`. `key` must be in the tree.
-    fn parents_first(
-        &self,
-        key: ActionNodeKey,
-        siblings_rev: bool,
-    ) -> impl Iterator<Item = ActionNodeKey> + '_ {
-        let mut pending = vec![key];
-        std::iter::from_fn(move || {
-            let key = pending.pop()?;
-            let children = self.nodes[key].sub_actions.iter().copied();
-            if siblings_rev {
-                pending.extend(children);
-            } else {
-                pending.extend(children.rev());
-            }
-            Some(key)
-        })
-        // `key` itself comes first.
-        .skip(1)
+    fn parents_first(&self, key: ActionNodeKey, siblings_rev: bool) -> TopDownWalk<'_> {
+        TopDownWalk {
+            tree: self,
+            cursor: TopDownCursor {
+                pending: vec![key],
+                last: None,
+                siblings_rev,
+            },
+        }
     }
 
-    /// Iterates the descendants of `key`, each after its own descendants,
+    /// Iterates `key` and its descendants, each after its own descendants,
     /// siblings last to first when `siblings_rev`. `key` must be in the tree.
     fn children_first(
         &self,
         key: ActionNodeKey,
         siblings_rev: bool,
     ) -> impl Iterator<Item = ActionNodeKey> + '_ {
-        let root = key;
         // `true` once a node's children have been pushed above it.
         let mut pending = vec![(key, false)];
         std::iter::from_fn(move || {
             loop {
                 let (key, expanded) = pending.pop()?;
                 if expanded {
-                    // `root` comes last, so stop there.
-                    return (key != root).then_some(key);
+                    return Some(key);
                 }
                 pending.push((key, true));
                 let children = self.nodes[key]
@@ -140,27 +206,17 @@ impl ActionTree {
         })
     }
 
-    /// Iterates the descendants of `key`, each before its own descendants.
-    pub fn descendants_top_down(
-        &self,
-        key: ActionNodeKey,
-    ) -> Result<impl Iterator<Item = ActionNodeKey> + '_, UnknownNode> {
+    fn subtree_top_down(&self, key: ActionNodeKey) -> Result<TopDownWalk<'_>, UnknownNode> {
         self.node(key)?;
         Ok(self.parents_first(key, false))
     }
 
-    /// Iterates [`descendants_top_down`](Self::descendants_top_down) in
-    /// reverse: each after its own descendants, siblings last to first.
-    pub fn descendants_top_down_rev(
-        &self,
-        key: ActionNodeKey,
-    ) -> Result<impl Iterator<Item = ActionNodeKey> + '_, UnknownNode> {
+    fn subtree_top_down_rev(&self, key: ActionNodeKey) -> Result<TopDownWalk<'_>, UnknownNode> {
         self.node(key)?;
-        Ok(self.children_first(key, true))
+        Ok(self.parents_first(key, true))
     }
 
-    /// Iterates the descendants of `key`, each after its own descendants.
-    pub fn descendants_bottom_up(
+    fn subtree_bottom_up(
         &self,
         key: ActionNodeKey,
     ) -> Result<impl Iterator<Item = ActionNodeKey> + '_, UnknownNode> {
@@ -168,14 +224,12 @@ impl ActionTree {
         Ok(self.children_first(key, false))
     }
 
-    /// Iterates [`descendants_bottom_up`](Self::descendants_bottom_up) in
-    /// reverse: each before its own descendants, siblings last to first.
-    pub fn descendants_bottom_up_rev(
+    fn subtree_bottom_up_rev(
         &self,
         key: ActionNodeKey,
     ) -> Result<impl Iterator<Item = ActionNodeKey> + '_, UnknownNode> {
         self.node(key)?;
-        Ok(self.parents_first(key, true))
+        Ok(self.children_first(key, true))
     }
 
     fn insert(&mut self, parent: Option<ActionNodeKey>) -> ActionNodeKey {
@@ -202,7 +256,9 @@ impl ActionTree {
         &mut self,
         key: ActionNodeKey,
     ) -> Result<Vec<ActionNodeKey>, UnknownNode> {
-        let removed: Vec<_> = self.descendants_bottom_up(key)?.collect();
+        let mut removed: Vec<_> = self.subtree_bottom_up(key)?.collect();
+        // `key` comes last, and stays.
+        removed.pop();
         for &key in &removed {
             self.nodes.remove(key);
         }
@@ -232,7 +288,50 @@ fn tree_mut(ctx: &mut Context) -> &mut ActionTree {
     ctx.get_or_insert_with(ActionTree::default)
 }
 
+/// The tree, for a read about `key`. Without a tree no node exists yet.
+pub(crate) fn tree_ref(ctx: &Context, key: ActionNodeKey) -> Result<&ActionTree, UnknownNode> {
+    ctx.get::<ActionTree>().ok_or(UnknownNode(key))
+}
+
 pub trait ActionTreeExt {
+    /// Whether `key` is in the action tree.
+    fn contains_node(&self, key: ActionNodeKey) -> bool;
+
+    /// The parent of `key`, or `None` for a root.
+    fn parent(&self, key: ActionNodeKey) -> Result<Option<ActionNodeKey>, UnknownNode>;
+
+    fn children(&self, key: ActionNodeKey) -> Result<&[ActionNodeKey], UnknownNode>;
+
+    /// Walks up from the parent of `key` to its root.
+    fn ancestors(
+        &self,
+        key: ActionNodeKey,
+    ) -> Result<impl Iterator<Item = ActionNodeKey> + '_, UnknownNode>;
+
+    /// Iterates `key` and its descendants, each before its own descendants,
+    /// so `key` comes first. Call
+    /// [`skip_children`](TopDownWalk::skip_children) to skip the descendants
+    /// of the node just returned.
+    fn subtree_top_down(&self, key: ActionNodeKey) -> Result<TopDownWalk<'_>, UnknownNode>;
+
+    /// [`subtree_top_down`](Self::subtree_top_down) with siblings last to
+    /// first.
+    fn subtree_top_down_rev(&self, key: ActionNodeKey) -> Result<TopDownWalk<'_>, UnknownNode>;
+
+    /// Iterates `key` and its descendants, each after its own descendants, so
+    /// `key` comes last.
+    fn subtree_bottom_up(
+        &self,
+        key: ActionNodeKey,
+    ) -> Result<impl Iterator<Item = ActionNodeKey> + '_, UnknownNode>;
+
+    /// [`subtree_bottom_up`](Self::subtree_bottom_up) with siblings last to
+    /// first.
+    fn subtree_bottom_up_rev(
+        &self,
+        key: ActionNodeKey,
+    ) -> Result<impl Iterator<Item = ActionNodeKey> + '_, UnknownNode>;
+
     /// Creates a root, even when another action is executing.
     fn create_root(&mut self) -> ActionNodeKey;
 
@@ -258,6 +357,48 @@ pub trait ActionTreeExt {
 }
 
 impl ActionTreeExt for Context {
+    fn contains_node(&self, key: ActionNodeKey) -> bool {
+        self.get::<ActionTree>()
+            .is_some_and(|tree| tree.contains(key))
+    }
+
+    fn parent(&self, key: ActionNodeKey) -> Result<Option<ActionNodeKey>, UnknownNode> {
+        tree_ref(self, key)?.parent(key)
+    }
+
+    fn children(&self, key: ActionNodeKey) -> Result<&[ActionNodeKey], UnknownNode> {
+        tree_ref(self, key)?.children(key)
+    }
+
+    fn ancestors(
+        &self,
+        key: ActionNodeKey,
+    ) -> Result<impl Iterator<Item = ActionNodeKey> + '_, UnknownNode> {
+        tree_ref(self, key)?.ancestors(key)
+    }
+
+    fn subtree_top_down(&self, key: ActionNodeKey) -> Result<TopDownWalk<'_>, UnknownNode> {
+        tree_ref(self, key)?.subtree_top_down(key)
+    }
+
+    fn subtree_top_down_rev(&self, key: ActionNodeKey) -> Result<TopDownWalk<'_>, UnknownNode> {
+        tree_ref(self, key)?.subtree_top_down_rev(key)
+    }
+
+    fn subtree_bottom_up(
+        &self,
+        key: ActionNodeKey,
+    ) -> Result<impl Iterator<Item = ActionNodeKey> + '_, UnknownNode> {
+        tree_ref(self, key)?.subtree_bottom_up(key)
+    }
+
+    fn subtree_bottom_up_rev(
+        &self,
+        key: ActionNodeKey,
+    ) -> Result<impl Iterator<Item = ActionNodeKey> + '_, UnknownNode> {
+        tree_ref(self, key)?.subtree_bottom_up_rev(key)
+    }
+
     fn create_root(&mut self) -> ActionNodeKey {
         let key = tree_mut(self).insert(None);
         notify_node_added(self, key);
@@ -265,27 +406,25 @@ impl ActionTreeExt for Context {
     }
 
     fn create_child(&mut self) -> Result<ActionNodeKey, NotExecuting> {
-        let parent = self.current_action().ok_or(NotExecuting)?;
+        let parent = self.current_action()?;
         let key = tree_mut(self).insert(Some(parent));
         notify_node_added(self, key);
         Ok(key)
     }
 
     fn has_executing(&self, key: ActionNodeKey) -> bool {
-        self.current_action() == Some(key) || self.has_executing_descendant(key)
+        self.current_action() == Ok(key) || self.has_executing_descendant(key)
     }
 
     fn has_executing_descendant(&self, key: ActionNodeKey) -> bool {
-        // Actions aren't stored, so the only executing actions are the
-        // current one and its ancestors.
-        let Some(current) = self.current_action() else {
+        // Actions only run nested inside the current one, so the only
+        // executing actions are the current one and its ancestors.
+        let Ok(current) = self.current_action() else {
             return false;
         };
-        self.get::<ActionTree>().is_some_and(|tree| {
-            tree.ancestors(current)
-                .expect("the current action is in the tree")
-                .any(|ancestor| ancestor == key)
-        })
+        self.ancestors(current)
+            .expect("the current action is in the tree")
+            .any(|ancestor| ancestor == key)
     }
 
     fn clear_children(
@@ -338,39 +477,122 @@ mod tests {
     }
 
     #[gtest]
-    fn descendants_top_down_visits_parents_first() {
+    fn subtree_top_down_visits_parents_first() {
         let (tree, root, [a, a1, a2, b, b1]) = tree();
-        let order: Vec<_> = tree.descendants_top_down(root).unwrap().collect();
-        expect_eq!(order, [a, a1, a2, b, b1]);
+        let order: Vec<_> = tree.subtree_top_down(root).unwrap().collect();
+        expect_eq!(order, [root, a, a1, a2, b, b1]);
     }
 
     #[gtest]
-    fn descendants_bottom_up_visits_children_first() {
-        let (tree, root, [a, a1, a2, b, b1]) = tree();
-        let order: Vec<_> = tree.descendants_bottom_up(root).unwrap().collect();
-        expect_eq!(order, [a1, a2, a, b1, b]);
+    fn skip_children_skips_the_last_returned_subtree() {
+        let (tree, root, [a, _, _, b, b1]) = tree();
+        let mut walk = tree.subtree_top_down(root).unwrap();
+        let mut order = Vec::new();
+        while let Some(key) = walk.next() {
+            order.push(key);
+            if key == a {
+                walk.skip_children();
+            }
+        }
+        expect_eq!(order, [root, a, b, b1]);
     }
 
     #[gtest]
-    fn rev_variants_reverse_their_forward_order() {
+    fn skip_children_before_next_does_nothing() {
+        let (tree, root, [a, a1, a2, b, b1]) = tree();
+        let mut walk = tree.subtree_top_down(root).unwrap();
+        walk.skip_children();
+        expect_eq!(walk.collect::<Vec<_>>(), [root, a, a1, a2, b, b1]);
+    }
+
+    #[gtest]
+    fn skip_children_at_the_start_node_ends_the_walk() {
         let (tree, root, _) = tree();
-        let mut top_down: Vec<_> = tree.descendants_top_down(root).unwrap().collect();
-        top_down.reverse();
-        let mut bottom_up: Vec<_> = tree.descendants_bottom_up(root).unwrap().collect();
-        bottom_up.reverse();
+        let mut walk = tree.subtree_top_down(root).unwrap();
+        expect_that!(walk.next(), some(eq(root)));
+        walk.skip_children();
+        expect_that!(walk.next(), none());
+    }
 
+    #[gtest]
+    fn subtree_bottom_up_visits_children_first() {
+        let (tree, root, [a, a1, a2, b, b1]) = tree();
+        let order: Vec<_> = tree.subtree_bottom_up(root).unwrap().collect();
+        expect_eq!(order, [a1, a2, a, b1, b, root]);
+    }
+
+    #[gtest]
+    fn rev_variants_reverse_sibling_order() {
+        let (tree, root, [a, a1, a2, b, b1]) = tree();
         expect_eq!(
-            tree.descendants_top_down_rev(root)
-                .unwrap()
-                .collect::<Vec<_>>(),
-            top_down
+            tree.subtree_top_down_rev(root).unwrap().collect::<Vec<_>>(),
+            [root, b, b1, a, a2, a1]
         );
         expect_eq!(
-            tree.descendants_bottom_up_rev(root)
+            tree.subtree_bottom_up_rev(root)
                 .unwrap()
                 .collect::<Vec<_>>(),
-            bottom_up
+            [b1, b, a2, a1, a, root]
         );
+    }
+
+    /// A context with a root that has children `a` and `b`, and `a` has a
+    /// child.
+    fn ctx_tree() -> (Context, [ActionNodeKey; 4]) {
+        let mut ctx = Context::new();
+        let root = ctx.create_root();
+        let (a, a_child, b) = ctx
+            .with_current_action(root, |ctx| {
+                let a = ctx.create_child().unwrap();
+                let a_child = ctx
+                    .with_current_action(a, |ctx| ctx.create_child().unwrap())
+                    .unwrap();
+                (a, a_child, ctx.create_child().unwrap())
+            })
+            .unwrap();
+        (ctx, [root, a, a_child, b])
+    }
+
+    #[gtest]
+    fn cursor_walks_while_the_tree_changes() {
+        let (mut ctx, [root, a, _, b]) = ctx_tree();
+        let mut cursor = ctx.subtree_top_down(root).unwrap().into_cursor();
+        let mut order = Vec::new();
+        while let Some(key) = cursor.next(&ctx) {
+            order.push(key);
+            if key == a {
+                ctx.clear_children(a).unwrap();
+            }
+        }
+        expect_eq!(order, [root, a, b]);
+    }
+
+    #[gtest]
+    fn cursor_skips_nodes_removed_after_being_queued() {
+        let (mut ctx, [root, a, a_child, b]) = ctx_tree();
+        let mut cursor = ctx.subtree_top_down(root).unwrap().into_cursor();
+        let mut order = Vec::new();
+        while let Some(key) = cursor.next(&ctx) {
+            order.push(key);
+            if key == a {
+                ctx.remove_node(b).unwrap();
+            }
+        }
+        expect_eq!(order, [root, a, a_child]);
+    }
+
+    #[gtest]
+    fn top_down_rev_can_skip_children() {
+        let (tree, root, [a, a1, a2, b, _]) = tree();
+        let mut walk = tree.subtree_top_down_rev(root).unwrap();
+        let mut order = Vec::new();
+        while let Some(key) = walk.next() {
+            order.push(key);
+            if key == b {
+                walk.skip_children();
+            }
+        }
+        expect_eq!(order, [root, b, a, a2, a1]);
     }
 
     #[gtest]
@@ -381,23 +603,21 @@ mod tests {
         expect_that!(tree.parent(a1), err(eq(UnknownNode(a1))));
         expect_that!(tree.children(a), err(eq(UnknownNode(a))));
         expect_true!(tree.ancestors(a1).is_err());
-        expect_true!(tree.descendants_top_down(a).is_err());
+        expect_true!(tree.subtree_top_down(a).is_err());
         expect_that!(tree.remove_branch(a), err(eq(&UnknownNode(a))));
         expect_that!(tree.remove_descendants(a), err(eq(&UnknownNode(a))));
     }
 
     #[gtest]
-    fn leaf_has_no_descendants() {
+    fn leaf_subtree_is_just_the_leaf() {
         let (tree, _, [_, a1, ..]) = tree();
         expect_that!(
-            tree.descendants_top_down(a1).unwrap().collect::<Vec<_>>(),
-            is_empty()
+            tree.subtree_top_down(a1).unwrap().collect::<Vec<_>>(),
+            elements_are![eq(&a1)]
         );
         expect_that!(
-            tree.descendants_bottom_up_rev(a1)
-                .unwrap()
-                .collect::<Vec<_>>(),
-            is_empty()
+            tree.subtree_bottom_up_rev(a1).unwrap().collect::<Vec<_>>(),
+            elements_are![eq(&a1)]
         );
     }
 }
