@@ -1,27 +1,71 @@
-use caaqi::prelude::*;
+use std::{cell::Cell, rc::Rc};
 
-#[derive(Default)]
-struct Counter(u32);
+use caaqi::prelude::*;
 
 fn main() {
     let mut ctx = Context::new();
-    ctx.insert(Counter::default());
-    let group = ctx.create_group();
 
-    let (root, ()) = ctx.run_node(|ctx: &mut Context| {
-        println!("hello there");
-        ctx.get_mut::<Counter>().unwrap().0 += 1;
+    ctx.run_tracked(|ctx: &mut Context| {
+        let count_tracking = ctx.create_tracking_id();
+        let count = Rc::new(Cell::new(0));
 
-        let (child, ()) = ctx.run_node(|ctx: &mut Context| {
-            println!("hello again");
-            ctx.get_mut::<Counter>().unwrap().0 += 1;
+        let doubled_tracking = ctx.create_tracking_id();
+        let doubled = Rc::new(Cell::new(count.get() * 2));
+
+        ctx.run_tracked({
+            let count = Rc::clone(&count);
+            let doubled = Rc::clone(&doubled);
+            move |ctx: &mut Context| {
+                ctx.track(count_tracking);
+
+                doubled.set(count.get() * 2);
+                ctx.notify(doubled_tracking);
+            }
         });
-        ctx.add_to_group(group, child).unwrap();
-    });
-    println!("counter: {}", ctx.get::<Counter>().unwrap().0);
 
-    let members = |ctx: &Context| ctx.group_members(group).unwrap().count();
-    println!("group members: {}", members(&ctx));
-    ctx.clear_children(root).unwrap();
-    println!("group members after clearing: {}", members(&ctx));
+        ctx.run_tracked({
+            let count = Rc::clone(&count);
+            let doubled = Rc::clone(&doubled);
+            move |ctx: &mut Context| {
+                ctx.track(count_tracking);
+                ctx.track(doubled_tracking);
+
+                println!("count: {}", count.get());
+                println!("count * 2: {}", doubled.get());
+            }
+        });
+
+        let complete = Rc::new(Cell::new(false));
+        let complete_tracking = ctx.create_tracking_id();
+
+        ctx.run_tracked({
+            let count = Rc::clone(&count);
+            let complete = Rc::clone(&complete);
+            move |ctx: &mut Context| {
+                ctx.track(count_tracking);
+
+                if count.get() < 10 {
+                    count.set(count.get() + 1);
+                    ctx.notify(count_tracking);
+                } else {
+                    complete.set(true);
+                    ctx.notify(complete_tracking);
+                }
+            }
+        });
+
+        ctx.run_tracked({
+            let complete = Rc::clone(&complete);
+            let count = Rc::clone(&count);
+            let doubled = Rc::clone(&doubled);
+            move |ctx: &mut Context| {
+                ctx.track(complete_tracking);
+
+                if complete.get() {
+                    println!("final count: {}", count.get());
+                    println!("final count * 2: {}", doubled.get());
+                }
+            }
+        });
+    });
 }
