@@ -167,13 +167,19 @@ impl TrackingExt for Context {
         let action_node = self.create_branch_action(action);
         self.run_action::<()>(action_node)?;
 
+        let root = self
+            .ancestors(action_node)
+            .expect("action node should exist")
+            .last()
+            .unwrap_or(action_node);
+
+        let ancestors = self
+            .ancestors(action_node)
+            .expect("action node should exist")
+            .collect::<HashSet<_>>();
+
         loop {
             let mut run_pass_nodes = HashSet::new();
-
-            let action_branch = self
-                .subtree_top_down(action_node)
-                .expect("action should exist")
-                .collect::<HashSet<_>>();
 
             for id in self.iter_to_notify() {
                 let tracked_actions = self
@@ -181,11 +187,11 @@ impl TrackingExt for Context {
                     .map_err(|_| UnknownTrackingId(id))?
                     .collect::<HashSet<_>>();
 
-                let are_all_inside_action_branch = tracked_actions
+                let not_in_tracked_node_branch = !tracked_actions
                     .iter()
-                    .all(|action| action_branch.contains(&action));
+                    .any(|tracked_node| ancestors.contains(&tracked_node));
 
-                if are_all_inside_action_branch {
+                if not_in_tracked_node_branch {
                     run_pass_nodes.extend(tracked_actions);
                     self.unqueue_notify(id)?;
                 }
@@ -196,7 +202,7 @@ impl TrackingExt for Context {
             }
 
             let mut action_branch = self
-                .subtree_top_down(action_node)
+                .subtree_top_down(root)
                 .expect("action should exist")
                 .into_cursor();
 
