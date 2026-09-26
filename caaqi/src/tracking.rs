@@ -34,8 +34,6 @@ pub enum TrackError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum RunTrackedError {
     #[error(transparent)]
-    NotExecuting(#[from] NotExecuting),
-    #[error(transparent)]
     RunActionError(#[from] RunActionError),
     #[error(transparent)]
     UnknownTrackingId(#[from] UnknownTrackingId),
@@ -166,9 +164,7 @@ impl TrackingExt for Context {
         &mut self,
         action: A,
     ) -> Result<(), RunTrackedError> {
-        let action_node = self
-            .create_child_action(action)
-            .unwrap_or_else(|NotExecuting| self.create_root());
+        let action_node = self.create_branch_action(action);
         self.run_action::<()>(action_node)?;
 
         loop {

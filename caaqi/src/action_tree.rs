@@ -3,7 +3,7 @@ use smallvec::SmallVec;
 
 use crate::{
     context::Context,
-    current::{CurrentActionExt, NotExecuting},
+    current::CurrentActionExt,
     lifecycle::{notify_node_added, notify_nodes_removed},
 };
 
@@ -335,8 +335,8 @@ pub trait ActionTreeExt {
     /// Creates a root, even when another action is executing.
     fn create_root(&mut self) -> ActionNodeKey;
 
-    /// Creates a child of the executing action.
-    fn create_child(&mut self) -> Result<ActionNodeKey, NotExecuting>;
+    /// Creates a child of the executing action, or a root outside execution.
+    fn create_branch(&mut self) -> ActionNodeKey;
 
     /// Whether `key` is the current action or one of its ancestors.
     fn has_executing(&self, key: ActionNodeKey) -> bool;
@@ -405,11 +405,11 @@ impl ActionTreeExt for Context {
         key
     }
 
-    fn create_child(&mut self) -> Result<ActionNodeKey, NotExecuting> {
-        let parent = self.current_action()?;
-        let key = tree_mut(self).insert(Some(parent));
+    fn create_branch(&mut self) -> ActionNodeKey {
+        let parent = self.current_action().ok();
+        let key = tree_mut(self).insert(parent);
         notify_node_added(self, key);
-        Ok(key)
+        key
     }
 
     fn has_executing(&self, key: ActionNodeKey) -> bool {
@@ -543,11 +543,11 @@ mod tests {
         let root = ctx.create_root();
         let (a, a_child, b) = ctx
             .with_current_action(root, |ctx| {
-                let a = ctx.create_child().unwrap();
+                let a = ctx.create_branch();
                 let a_child = ctx
-                    .with_current_action(a, |ctx| ctx.create_child().unwrap())
+                    .with_current_action(a, |ctx| ctx.create_branch())
                     .unwrap();
-                (a, a_child, ctx.create_child().unwrap())
+                (a, a_child, ctx.create_branch())
             })
             .unwrap();
         (ctx, [root, a, a_child, b])

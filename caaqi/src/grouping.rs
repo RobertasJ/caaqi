@@ -309,8 +309,8 @@ mod tests {
     /// A root with two children, the first of which has a child.
     fn tree(ctx: &mut Context) -> [ActionNodeKey; 4] {
         let (root, (a, a_child, b)) = ctx.run_node(|ctx: &mut Context| {
-            let (a, a_child) = ctx.run_node(|ctx: &mut Context| ctx.create_child().unwrap());
-            let b = ctx.create_child().unwrap();
+            let (a, a_child) = ctx.run_node(|ctx: &mut Context| ctx.create_branch());
+            let b = ctx.create_branch();
             (a, a_child, b)
         });
         [root, a, a_child, b]

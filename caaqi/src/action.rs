@@ -8,7 +8,7 @@ use slotmap::SecondaryMap;
 use crate::{
     action_tree::{ActionNodeKey, ActionTree, ActionTreeExt, NodeExecuting, UnknownNode, tree_ref},
     context::Context,
-    current::{CurrentActionExt, NotExecuting},
+    current::CurrentActionExt,
     lifecycle::{LifecycleExt, NodeObserver},
 };
 
@@ -119,19 +119,16 @@ pub trait ActionExt {
     /// The action body is dropped afterwards, so the node only records where
     /// the action ran and can't be rerun. Use
     /// [`create_root_action`](Self::create_root_action) or
-    /// [`create_child_action`](Self::create_child_action) for rerunnable
+    /// [`create_branch_action`](Self::create_branch_action) for rerunnable
     /// actions.
     fn run_node<A: Action>(&mut self, action: A) -> (ActionNodeKey, A::Output);
 
     /// Creates a root storing `action`, without running it.
     fn create_root_action<A: Action + 'static>(&mut self, action: A) -> ActionNodeKey;
 
-    /// Creates a child of the executing action storing `action`, without
-    /// running it.
-    fn create_child_action<A: Action + 'static>(
-        &mut self,
-        action: A,
-    ) -> Result<ActionNodeKey, NotExecuting>;
+    /// Creates a child of the executing action (or a root outside execution)
+    /// storing `action`, without running it.
+    fn create_branch_action<A: Action + 'static>(&mut self, action: A) -> ActionNodeKey;
 
     /// Whether `key` stores an action with output `O`. Actions taken out to
     /// run aren't stored until they finish.
@@ -152,9 +149,7 @@ impl ActionExt for Context {
     }
 
     fn run_node<A: Action>(&mut self, mut action: A) -> (ActionNodeKey, A::Output) {
-        let key = self
-            .create_child()
-            .unwrap_or_else(|NotExecuting| self.create_root());
+        let key = self.create_branch();
         let output = self
             .with_current_action(key, |ctx| action.run(ctx))
             .expect("the node was just created");
@@ -167,13 +162,10 @@ impl ActionExt for Context {
         key
     }
 
-    fn create_child_action<A: Action + 'static>(
-        &mut self,
-        action: A,
-    ) -> Result<ActionNodeKey, NotExecuting> {
-        let key = self.create_child()?;
+    fn create_branch_action<A: Action + 'static>(&mut self, action: A) -> ActionNodeKey {
+        let key = self.create_branch();
         store(self, key, action);
-        Ok(key)
+        key
     }
 
     fn run_action<O: 'static>(&mut self, key: ActionNodeKey) -> Result<O, RunActionError> {
@@ -213,6 +205,7 @@ mod tests {
     use googletest::prelude::*;
 
     use super::*;
+    use crate::current::NotExecuting;
 
     #[gtest]
     fn create_root_action_stores_without_running() {
@@ -229,15 +222,14 @@ mod tests {
     }
 
     #[gtest]
-    fn create_child_action_parents_under_the_current_action() {
+    fn create_branch_action_parents_under_the_current_action_if_any() {
         let mut ctx = Context::new();
-        expect_that!(
-            ctx.create_child_action(|_: &mut Context| ()),
-            err(eq(NotExecuting))
-        );
+        let root = ctx.create_branch_action(|_: &mut Context| ());
+        expect_that!(ctx.parent(root), ok(none()));
+        expect_that!(ctx.has_stored_action::<()>(root), ok(eq(true)));
 
         let (parent, child) =
-            ctx.run_node(|ctx: &mut Context| ctx.create_child_action(|_: &mut Context| 1).unwrap());
+            ctx.run_node(|ctx: &mut Context| ctx.create_branch_action(|_: &mut Context| 1));
         expect_that!(ctx.parent(child), ok(some(eq(parent))));
         expect_that!(ctx.has_stored_action::<i32>(child), ok(eq(true)));
     }
@@ -271,7 +263,7 @@ mod tests {
     #[gtest]
     fn run_action_recreates_descendants() {
         let mut ctx = Context::new();
-        let key = ctx.create_root_action(|ctx: &mut Context| ctx.create_child().unwrap());
+        let key = ctx.create_root_action(|ctx: &mut Context| ctx.create_branch());
 
         let first = ctx.run_action::<ActionNodeKey>(key).unwrap();
         let second = ctx.run_action::<ActionNodeKey>(key).unwrap();
