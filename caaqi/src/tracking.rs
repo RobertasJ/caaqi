@@ -166,18 +166,18 @@ impl TrackingExt for Context {
         &mut self,
         action: A,
     ) -> Result<(), RunTrackedError> {
-        let action_node = self.create_child_action(action)?;
+        let action_node = self
+            .create_child_action(action)
+            .unwrap_or_else(|NotExecuting| self.create_root());
         self.run_action::<()>(action_node)?;
 
-        let action_branch = self
-            .subtree_top_down(action_node)
-            .expect("action should exist")
-            .collect::<HashSet<_>>();
+        loop {
+            let mut run_pass_nodes = HashSet::new();
 
-        let mut continue_notifying = true;
-
-        while continue_notifying {
-            continue_notifying = false;
+            let action_branch = self
+                .subtree_top_down(action_node)
+                .expect("action should exist")
+                .collect::<HashSet<_>>();
 
             for id in self.iter_to_notify() {
                 let tracked_actions = self
@@ -190,13 +190,18 @@ impl TrackingExt for Context {
                     .all(|action| action_branch.contains(&action));
 
                 if are_all_inside_action_branch {
-                    continue_notifying = true;
-
-                    for action in tracked_actions {
-                        self.clear_children(action)?;
-                        self.run_action::<()>(action)?;
-                    }
+                    run_pass_nodes.extend(tracked_actions);
+                    self.unqueue_notify(id)?;
                 }
+            }
+
+            if run_pass_nodes.is_empty() {
+                break;
+            }
+
+            for action_node in run_pass_nodes {
+                self.clear_children(action_node)?;
+                self.run_action::<()>(action_node)?;
             }
         }
 

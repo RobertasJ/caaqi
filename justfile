@@ -6,6 +6,9 @@ push:
     jj b m main
     jj git push
 
+commit: && push
+    jj desc
+
 [arg("pager", long, value="true")]
 test test_name="" pager="false":
     cargo test -q {{ test_name }} -p caaqi --lib {{ if pager == "true" { " | less -R" } else { "" } }}
