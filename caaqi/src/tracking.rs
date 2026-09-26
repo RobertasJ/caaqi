@@ -195,9 +195,17 @@ impl TrackingExt for Context {
                 break;
             }
 
-            for action_node in run_pass_nodes {
-                self.clear_children(action_node)?;
-                self.run_action::<()>(action_node)?;
+            let mut action_branch = self
+                .subtree_top_down(action_node)
+                .expect("action should exist")
+                .into_cursor();
+
+            while let Some(action_node) = action_branch.next(self) {
+                if run_pass_nodes.contains(&action_node) {
+                    self.clear_children(action_node)?;
+                    self.run_action::<()>(action_node)?;
+                    action_branch.skip_children();
+                }
             }
         }
 
