@@ -1,4 +1,7 @@
-use std::collections::HashSet;
+use std::{
+    collections::{HashSet, hash_set},
+    f32::consts::E,
+};
 
 use crate::{
     action::{Action, ActionExt, RunActionError},
@@ -61,21 +64,64 @@ impl RerunNeeded {
     }
 }
 
+/// The tracking ids waiting to be notified.
+#[derive(Debug, Default)]
+pub struct ToNotify {
+    ids: HashSet<TrackingId>,
+}
+
+impl ToNotify {
+    fn insert(&mut self, id: TrackingId) {
+        self.ids.insert(id);
+    }
+
+    fn remove(&mut self, id: TrackingId) -> bool {
+        self.ids.remove(&id)
+    }
+}
+
+impl Context {
+    /// Queues `id` to be notified.
+    fn queue_notify(&mut self, id: TrackingId) -> Result<(), UnknownTrackingId> {
+        if !self.group_exists(id.0) {
+            return Err(UnknownTrackingId(id));
+        }
+        self.get_or_insert_with(ToNotify::default).insert(id);
+        Ok(())
+    }
+
+    /// The queued tracking ids, in no particular order. The iterator owns a
+    /// copy of the queue, so it doesn't borrow the context.
+    fn iter_to_notify(&self) -> hash_set::IntoIter<TrackingId> {
+        self.get::<ToNotify>()
+            .map(|to_notify| to_notify.ids.clone())
+            .unwrap_or_default()
+            .into_iter()
+    }
+
+    /// Removes `id` from the queue. Returns `Ok(false)` if it wasn't queued.
+    fn unqueue_notify(&mut self, id: TrackingId) -> Result<bool, UnknownTrackingId> {
+        if !self.group_exists(id.0) {
+            return Err(UnknownTrackingId(id));
+        }
+        Ok(self
+            .get_mut::<ToNotify>()
+            .is_some_and(|to_notify| to_notify.remove(id)))
+    }
+}
+
 pub trait TrackingExt {
     /// Creates a tracking id with nothing tracking it yet.
     fn create_tracking_id(&mut self) -> TrackingId;
 
     /// Runs `action` so that the [`track`](Self::track) calls it makes can
     /// [`rerun`](Self::rerun) it.
-    fn run_tracked<A: Action<Output = Result<(), RerunNeeded>> + 'static>(
-        &mut self,
-        action: A,
-    ) -> Result<(), RerunNeeded>;
+    fn run_tracked<A: Action<Output = ()> + 'static>(&mut self, action: A);
 
-    fn run_tracked_checked<A: Action<Output = Result<(), RerunNeeded>> + 'static>(
+    fn run_tracked_checked<A: Action<Output = ()> + 'static>(
         &mut self,
         action: A,
-    ) -> Result<Result<(), RerunNeeded>, RunTrackedError>;
+    ) -> Result<(), RunTrackedError>;
 
     /// Marks the executing action as depending on `id`, so a
     /// [`rerun`](Self::rerun) of `id` reruns it.
@@ -98,11 +144,11 @@ pub trait TrackingExt {
     ///
     /// If `id` doesn't exist. Use [`rerun_checked`](Self::rerun_checked) to get
     /// the error instead.
-    fn notify(&mut self, id: TrackingId) -> Result<(), RerunNeeded>;
+    fn notify(&mut self, id: TrackingId);
 
     /// [`rerun`](Self::rerun), returning an unknown `id` as the outer error
     /// instead of panicking. The inner `Result` is the early return.
-    fn notify_checked(&mut self, id: TrackingId) -> Result<Result<(), RerunNeeded>, TrackError>;
+    fn notify_checked(&mut self, id: TrackingId) -> Result<(), UnknownTrackingId>;
 }
 
 impl TrackingExt for Context {
@@ -111,32 +157,49 @@ impl TrackingExt for Context {
         TrackingId(group)
     }
 
-    fn run_tracked<A: Action<Output = Result<(), RerunNeeded>> + 'static>(
-        &mut self,
-        action: A,
-    ) -> Result<(), RerunNeeded> {
+    fn run_tracked<A: Action<Output = ()> + 'static>(&mut self, action: A) {
         self.run_tracked_checked(action)
             .unwrap_or_else(|e| panic!("{e}"))
     }
 
-    fn run_tracked_checked<A: Action<Output = Result<(), RerunNeeded>> + 'static>(
+    fn run_tracked_checked<A: Action<Output = ()> + 'static>(
         &mut self,
         action: A,
-    ) -> Result<Result<(), RerunNeeded>, RunTrackedError> {
+    ) -> Result<(), RunTrackedError> {
         let action_node = self.create_child_action(action)?;
-        let output = self.run_action::<Result<(), RerunNeeded>>(action_node)?;
-        match output {
-            Ok(()) => Ok(Ok(())),
-            Err(rerun_needed) => {
-                if self.current_action()? == rerun_needed.handler {
-                    self.run_tracked(rerun_needed.id)?;
+        self.run_action::<()>(action_node)?;
 
-                    Ok(Ok(()))
-                } else {
-                    Ok(Err(rerun_needed))
+        let action_branch = self
+            .subtree_top_down(action_node)
+            .expect("action should exist")
+            .collect::<HashSet<_>>();
+
+        let mut continue_notifying = true;
+
+        while continue_notifying {
+            continue_notifying = false;
+
+            for id in self.iter_to_notify() {
+                let mut tracked_actions = self
+                    .group_members(id.0)
+                    .map_err(|_| UnknownTrackingId(id))?;
+
+                let are_all_inside_action_branch =
+                    tracked_actions.all(|action| action_branch.contains(&action));
+
+                // apparently rust doesn't see it's not used after this point
+                drop(tracked_actions);
+
+                if are_all_inside_action_branch {
+                    continue_notifying = true;
+
+                    self.clear_children(action_node)?;
+                    self.run_action(action_node)?;
                 }
             }
         }
+
+        Ok(())
     }
 
     fn track(&mut self, id: TrackingId) {
@@ -151,67 +214,13 @@ impl TrackingExt for Context {
         Ok(())
     }
 
-    fn notify(&mut self, id: TrackingId) -> Result<(), RerunNeeded> {
-        match self.notify_checked(id) {
-            Ok(result) => result,
-            Err(error) => panic!("{error}"),
+    fn notify(&mut self, id: TrackingId) {
+        if let Err(error) = self.notify_checked(id) {
+            panic!("{error}")
         }
     }
 
-    fn notify_checked(&mut self, id: TrackingId) -> Result<Result<(), RerunNeeded>, TrackError> {
-        let action = self.current_action()?;
-        let ancestors = [action].into_iter().chain(self.ancestors(action)?);
-
-        let mut rerun_needed = None;
-
-        for ancestor in ancestors {
-            if self
-                .group_contains(id.0, ancestor)
-                .map_err(|_| UnknownTrackingId(id))?
-            {
-                rerun_needed = Some(ancestor);
-            }
-        }
-
-        if let Some(handler) = rerun_needed {
-            Ok(Err(RerunNeeded { id, handler }))
-        } else {
-            Ok(Ok(()))
-        }
-    }
-}
-
-impl Context {
-    fn run_tracked(&mut self, tracking_id: TrackingId) -> Result<(), RunTrackedError> {
-        let tracked = self
-            .group_members(tracking_id.0)
-            .map_err(|_| UnknownTrackingId(tracking_id))?
-            .collect::<HashSet<_>>();
-
-        let root = self.current_root()?;
-        let mut tree = self
-            .subtree_top_down(root)
-            .expect("the tree root doesnt exist")
-            .into_cursor();
-
-        Ok(while let Some(node) = tree.next(self) {
-            if tracked.contains(&node) {
-                self.clear_children(node)?;
-                let res = self.run_action::<Result<(), RerunNeeded>>(node)?;
-
-                match res {
-                    Ok(()) => {}
-                    Err(rerun_needed) => {
-                        if self.current_action()? == rerun_needed.handler {
-                            self.run_tracked(rerun_needed.id)?;
-                        } else {
-                            return Err(RunTrackedError::NotExecuting(current::NotExecuting));
-                        }
-                    }
-                }
-
-                tree.skip_children();
-            }
-        })
+    fn notify_checked(&mut self, id: TrackingId) -> Result<(), UnknownTrackingId> {
+        self.queue_notify(id)
     }
 }

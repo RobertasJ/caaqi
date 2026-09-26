@@ -214,14 +214,11 @@ impl GroupingExt for Context {
     fn group_members(
         &self,
         group: GroupId,
-    ) -> Result<impl Iterator<Item = ActionNodeKey> + '_, UnknownGroup> {
+    ) -> Result<impl Iterator<Item = ActionNodeKey>, UnknownGroup> {
         groups(self, group)?.members(group)
     }
 
-    fn groups_of(
-        &self,
-        key: ActionNodeKey,
-    ) -> Result<impl Iterator<Item = GroupId> + '_, UnknownNode> {
+    fn groups_of(&self, key: ActionNodeKey) -> Result<impl Iterator<Item = GroupId>, UnknownNode> {
         tree_ref(self, key)?.node(key)?;
         Ok(self
             .get::<Groups>()

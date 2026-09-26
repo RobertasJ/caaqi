@@ -22,7 +22,8 @@ pub mod prelude {
         },
         lifecycle::{LifecycleExt, NodeObserver},
         tracking::{
-            RerunNeeded, RunTrackedError, TrackError, TrackingExt, TrackingId, UnknownTrackingId,
+            RerunNeeded, RunTrackedError, ToNotify, TrackError, TrackingExt, TrackingId,
+            UnknownTrackingId,
         },
     };
 }
