@@ -180,21 +180,22 @@ impl TrackingExt for Context {
             continue_notifying = false;
 
             for id in self.iter_to_notify() {
-                let mut tracked_actions = self
+                let tracked_actions = self
                     .group_members(id.0)
-                    .map_err(|_| UnknownTrackingId(id))?;
+                    .map_err(|_| UnknownTrackingId(id))?
+                    .collect::<HashSet<_>>();
 
-                let are_all_inside_action_branch =
-                    tracked_actions.all(|action| action_branch.contains(&action));
-
-                // apparently rust doesn't see it's not used after this point
-                drop(tracked_actions);
+                let are_all_inside_action_branch = tracked_actions
+                    .iter()
+                    .all(|action| action_branch.contains(&action));
 
                 if are_all_inside_action_branch {
                     continue_notifying = true;
 
-                    self.clear_children(action_node)?;
-                    self.run_action(action_node)?;
+                    for action in tracked_actions {
+                        self.clear_children(action)?;
+                        self.run_action::<()>(action)?;
+                    }
                 }
             }
         }
