@@ -8,7 +8,7 @@ use crate::action::Action;
 /// A type-map of resources: one value per type, global to the context.
 ///
 /// Everything lives here, including caaqi's own modules (see
-/// [`ActionTree`](crate::action_tree::ActionTree)). Modules expose their API as
+/// [`Trace`](crate::trace::Trace)). Modules expose their API as
 /// extension traits implemented for `Context`.
 ///
 /// Values survive reruns and descendant removal, and are dropped only by

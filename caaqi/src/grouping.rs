@@ -3,10 +3,10 @@ use std::collections::{HashMap, HashSet};
 use slotmap::SecondaryMap;
 
 use crate::{
-    action_tree::{ActionNodeKey, ActionTree, UnknownNode, tree_ref},
     context::Context,
     id::Id,
     lifecycle::{LifecycleExt, NodeObserver},
+    trace::{Trace, TraceKey, UnknownNode, trace_ref},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -45,11 +45,11 @@ pub enum RemoveFromGroupError {
 ///
 /// Membership is stored both ways so a removed node can leave all its groups
 /// without scanning every group. Nodes leave their groups when they are
-/// removed from the tree.
+/// removed from the trace.
 #[derive(Debug, Default)]
 pub struct Groups {
-    members: HashMap<GroupId, HashSet<ActionNodeKey>>,
-    memberships: SecondaryMap<ActionNodeKey, HashSet<GroupId>>,
+    members: HashMap<GroupId, HashSet<TraceKey>>,
+    memberships: SecondaryMap<TraceKey, HashSet<GroupId>>,
 }
 
 impl Groups {
@@ -57,34 +57,31 @@ impl Groups {
         self.members.contains_key(&group)
     }
 
-    fn group(&self, group: GroupId) -> Result<&HashSet<ActionNodeKey>, UnknownGroup> {
+    fn group(&self, group: GroupId) -> Result<&HashSet<TraceKey>, UnknownGroup> {
         self.members.get(&group).ok_or(UnknownGroup(group))
     }
 
-    fn contains(&self, group: GroupId, key: ActionNodeKey) -> Result<bool, UnknownGroup> {
+    fn contains(&self, group: GroupId, key: TraceKey) -> Result<bool, UnknownGroup> {
         Ok(self.group(group)?.contains(&key))
     }
 
-    fn members(
-        &self,
-        group: GroupId,
-    ) -> Result<impl Iterator<Item = ActionNodeKey> + '_, UnknownGroup> {
+    fn members(&self, group: GroupId) -> Result<impl Iterator<Item = TraceKey> + '_, UnknownGroup> {
         Ok(self.group(group)?.iter().copied())
     }
 
-    fn groups_of(&self, key: ActionNodeKey) -> impl Iterator<Item = GroupId> + '_ {
+    fn groups_of(&self, key: TraceKey) -> impl Iterator<Item = GroupId> + '_ {
         self.memberships.get(key).into_iter().flatten().copied()
     }
 
     /// Adds `key` to `group` in both directions. Returns `Ok(false)` if it
     /// was already a member.
-    fn add_membership(&mut self, group: GroupId, key: ActionNodeKey) -> Result<bool, UnknownGroup> {
+    fn add_membership(&mut self, group: GroupId, key: TraceKey) -> Result<bool, UnknownGroup> {
         let members = self.members.get_mut(&group).ok_or(UnknownGroup(group))?;
         let added = members.insert(key);
         if added {
             self.memberships
                 .entry(key)
-                .expect("node is in the tree")
+                .expect("node is in the trace")
                 .or_default()
                 .insert(group);
         }
@@ -93,11 +90,7 @@ impl Groups {
 
     /// Removes `key` from `group` in both directions. Returns `Ok(false)` if
     /// it wasn't a member.
-    fn remove_membership(
-        &mut self,
-        group: GroupId,
-        key: ActionNodeKey,
-    ) -> Result<bool, UnknownGroup> {
+    fn remove_membership(&mut self, group: GroupId, key: TraceKey) -> Result<bool, UnknownGroup> {
         let members = self.members.get_mut(&group).ok_or(UnknownGroup(group))?;
         let removed = members.remove(&key);
         if removed {
@@ -109,7 +102,7 @@ impl Groups {
     /// Removes `group` from the groups of `key`: the `memberships` half of
     /// [`remove_membership`](Self::remove_membership), for callers that have
     /// already updated `members`.
-    fn remove_group_of(&mut self, key: ActionNodeKey, group: GroupId) {
+    fn remove_group_of(&mut self, key: TraceKey, group: GroupId) {
         let groups = self
             .memberships
             .get_mut(key)
@@ -121,7 +114,7 @@ impl Groups {
     }
 
     /// Takes `key` out of every group it belongs to.
-    fn remove_node(&mut self, key: ActionNodeKey) {
+    fn remove_node(&mut self, key: TraceKey) {
         // Copied because `remove_membership` edits the list being iterated.
         for group in self.memberships.get(key).cloned().unwrap_or_default() {
             let removed = self
@@ -133,7 +126,7 @@ impl Groups {
 }
 
 impl NodeObserver for Groups {
-    fn nodes_removed(ctx: &mut Context, keys: &[ActionNodeKey]) {
+    fn nodes_removed(ctx: &mut Context, keys: &[TraceKey]) {
         if let Some(groups) = ctx.get_mut::<Groups>() {
             for &key in keys {
                 groups.remove_node(key);
@@ -154,39 +147,31 @@ pub trait GroupingExt {
     fn group_exists(&self, group: GroupId) -> bool;
 
     /// Whether `key` is a member of `group`.
-    fn group_contains(
-        &self,
-        group: GroupId,
-        key: ActionNodeKey,
-    ) -> Result<bool, GroupContainsError>;
+    fn group_contains(&self, group: GroupId, key: TraceKey) -> Result<bool, GroupContainsError>;
 
     /// The members of `group`, in no particular order.
     fn group_members(
         &self,
         group: GroupId,
-    ) -> Result<impl Iterator<Item = ActionNodeKey> + '_, UnknownGroup>;
+    ) -> Result<impl Iterator<Item = TraceKey> + '_, UnknownGroup>;
 
     /// The groups `key` belongs to, in no particular order.
-    fn groups_of(
-        &self,
-        key: ActionNodeKey,
-    ) -> Result<impl Iterator<Item = GroupId> + '_, UnknownNode>;
+    fn groups_of(&self, key: TraceKey) -> Result<impl Iterator<Item = GroupId> + '_, UnknownNode>;
 
     /// Creates an empty group.
     fn create_group(&mut self) -> GroupId;
 
     /// Removes `group`, returning its members.
-    fn remove_group(&mut self, group: GroupId) -> Result<HashSet<ActionNodeKey>, UnknownGroup>;
+    fn remove_group(&mut self, group: GroupId) -> Result<HashSet<TraceKey>, UnknownGroup>;
 
     /// Adds `key` to `group`. Returns `Ok(false)` if it was already a member.
-    fn add_to_group(&mut self, group: GroupId, key: ActionNodeKey)
-    -> Result<bool, AddToGroupError>;
+    fn add_to_group(&mut self, group: GroupId, key: TraceKey) -> Result<bool, AddToGroupError>;
 
     /// Removes `key` from `group`. Returns `Ok(false)` if it wasn't a member.
     fn remove_from_group(
         &mut self,
         group: GroupId,
-        key: ActionNodeKey,
+        key: TraceKey,
     ) -> Result<bool, RemoveFromGroupError>;
 }
 
@@ -202,24 +187,20 @@ impl GroupingExt for Context {
             .is_some_and(|groups| groups.exists(group))
     }
 
-    fn group_contains(
-        &self,
-        group: GroupId,
-        key: ActionNodeKey,
-    ) -> Result<bool, GroupContainsError> {
-        tree_ref(self, key)?.node(key)?;
+    fn group_contains(&self, group: GroupId, key: TraceKey) -> Result<bool, GroupContainsError> {
+        trace_ref(self, key)?.node(key)?;
         Ok(groups(self, group)?.contains(group, key)?)
     }
 
     fn group_members(
         &self,
         group: GroupId,
-    ) -> Result<impl Iterator<Item = ActionNodeKey>, UnknownGroup> {
+    ) -> Result<impl Iterator<Item = TraceKey>, UnknownGroup> {
         groups(self, group)?.members(group)
     }
 
-    fn groups_of(&self, key: ActionNodeKey) -> Result<impl Iterator<Item = GroupId>, UnknownNode> {
-        tree_ref(self, key)?.node(key)?;
+    fn groups_of(&self, key: TraceKey) -> Result<impl Iterator<Item = GroupId>, UnknownNode> {
+        trace_ref(self, key)?.node(key)?;
         Ok(self
             .get::<Groups>()
             .into_iter()
@@ -232,7 +213,7 @@ impl GroupingExt for Context {
         group
     }
 
-    fn remove_group(&mut self, group: GroupId) -> Result<HashSet<ActionNodeKey>, UnknownGroup> {
+    fn remove_group(&mut self, group: GroupId) -> Result<HashSet<TraceKey>, UnknownGroup> {
         let groups = groups_mut(self);
         let members = groups.members.remove(&group).ok_or(UnknownGroup(group))?;
         for &key in &members {
@@ -241,21 +222,17 @@ impl GroupingExt for Context {
         Ok(members)
     }
 
-    fn add_to_group(
-        &mut self,
-        group: GroupId,
-        key: ActionNodeKey,
-    ) -> Result<bool, AddToGroupError> {
-        self.get_or_insert_with(ActionTree::default).node(key)?;
+    fn add_to_group(&mut self, group: GroupId, key: TraceKey) -> Result<bool, AddToGroupError> {
+        self.get_or_insert_with(Trace::default).node(key)?;
         Ok(groups_mut(self).add_membership(group, key)?)
     }
 
     fn remove_from_group(
         &mut self,
         group: GroupId,
-        key: ActionNodeKey,
+        key: TraceKey,
     ) -> Result<bool, RemoveFromGroupError> {
-        self.get_or_insert_with(ActionTree::default).node(key)?;
+        self.get_or_insert_with(Trace::default).node(key)?;
         Ok(groups_mut(self).remove_membership(group, key)?)
     }
 }
@@ -267,17 +244,17 @@ mod tests {
     use super::*;
     use crate::{
         action::ActionExt,
-        action_tree::{
-            ActionTreeExt, ClearChildrenError, ExecutingDescendant, NodeExecuting, RemoveNodeError,
-        },
         current::CurrentActionExt,
+        trace::{
+            ClearChildrenError, ExecutingDescendant, NodeExecuting, RemoveNodeError, TraceExt,
+        },
     };
 
-    fn members(ctx: &Context, group: GroupId) -> HashSet<ActionNodeKey> {
+    fn members(ctx: &Context, group: GroupId) -> HashSet<TraceKey> {
         ctx.group_members(group).unwrap().collect()
     }
 
-    fn groups_of(ctx: &Context, key: ActionNodeKey) -> HashSet<GroupId> {
+    fn groups_of(ctx: &Context, key: TraceKey) -> HashSet<GroupId> {
         ctx.groups_of(key).unwrap().collect()
     }
 
@@ -307,7 +284,7 @@ mod tests {
     }
 
     /// A root with two children, the first of which has a child.
-    fn tree(ctx: &mut Context) -> [ActionNodeKey; 4] {
+    fn tree(ctx: &mut Context) -> [TraceKey; 4] {
         let (root, (a, a_child, b)) = ctx.run_node(|ctx: &mut Context| {
             let (a, a_child) = ctx.run_node(|ctx: &mut Context| ctx.create_branch());
             let b = ctx.create_branch();

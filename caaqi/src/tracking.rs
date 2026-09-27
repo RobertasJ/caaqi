@@ -5,10 +5,10 @@ use std::{
 
 use crate::{
     action::{Action, ActionExt, RunActionError},
-    action_tree::{ActionNodeKey, ActionTreeExt, ClearChildrenError, UnknownNode},
     context::Context,
     current::{self, CurrentActionExt, NotExecuting},
     grouping::{GroupId, GroupingExt},
+    trace::{ClearChildrenError, TraceExt, TraceKey, UnknownNode},
     tracking,
 };
 
@@ -52,7 +52,7 @@ pub enum RunTrackedError {
 pub struct RerunNeeded {
     id: TrackingId,
     /// The topmost executing action tracking `id`.
-    handler: ActionNodeKey,
+    handler: TraceKey,
 }
 
 impl RerunNeeded {

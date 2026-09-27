@@ -1,8 +1,8 @@
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 
 use crate::{
-    action_tree::{ActionNodeKey, ActionTree, ActionTreeExt, UnknownNode},
     context::Context,
+    trace::{Trace, TraceExt, TraceKey, UnknownNode},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -12,50 +12,50 @@ pub struct NotExecuting;
 /// The current-action resource, shared by every runner so they agree on which
 /// action is executing.
 #[derive(Default)]
-pub struct CurrentAction(Option<ActionNodeKey>);
+pub struct CurrentAction(Option<TraceKey>);
 
 pub trait CurrentActionExt {
     /// The executing action, or [`NotExecuting`] outside execution.
-    fn current_action(&self) -> Result<ActionNodeKey, NotExecuting>;
+    fn current_action(&self) -> Result<TraceKey, NotExecuting>;
 
     /// The root of the executing action's tree, which is the executing action
     /// itself when it's a root.
-    fn current_root(&self) -> Result<ActionNodeKey, NotExecuting>;
+    fn current_root(&self) -> Result<TraceKey, NotExecuting>;
 
     /// Runs `f` with `key` as the current action, restoring the previous one
     /// afterwards, even if `f` panics.
     ///
-    /// Refusing unknown keys keeps the current action in the tree, since
+    /// Refusing unknown keys keeps the current action in the trace, since
     /// executing nodes can't be removed.
     fn with_current_action<R>(
         &mut self,
-        key: ActionNodeKey,
+        key: TraceKey,
         f: impl FnOnce(&mut Context) -> R,
     ) -> Result<R, UnknownNode>;
 }
 
 impl CurrentActionExt for Context {
-    fn current_action(&self) -> Result<ActionNodeKey, NotExecuting> {
+    fn current_action(&self) -> Result<TraceKey, NotExecuting> {
         self.get::<CurrentAction>()
             .and_then(|current| current.0)
             .ok_or(NotExecuting)
     }
 
-    fn current_root(&self) -> Result<ActionNodeKey, NotExecuting> {
+    fn current_root(&self) -> Result<TraceKey, NotExecuting> {
         let current = self.current_action()?;
         Ok(self
             .ancestors(current)
-            .expect("the current action is in the tree")
+            .expect("the current action is in the trace")
             .last()
             .unwrap_or(current))
     }
 
     fn with_current_action<R>(
         &mut self,
-        key: ActionNodeKey,
+        key: TraceKey,
         f: impl FnOnce(&mut Context) -> R,
     ) -> Result<R, UnknownNode> {
-        self.get_or_insert_with(ActionTree::default).node(key)?;
+        self.get_or_insert_with(Trace::default).node(key)?;
         let previous = self
             .get_or_insert_with(CurrentAction::default)
             .0

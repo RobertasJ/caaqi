@@ -6,10 +6,10 @@ use std::{
 use slotmap::SecondaryMap;
 
 use crate::{
-    action_tree::{ActionNodeKey, ActionTree, ActionTreeExt, NodeExecuting, UnknownNode, tree_ref},
     context::Context,
     current::CurrentActionExt,
     lifecycle::{LifecycleExt, NodeObserver},
+    trace::{NodeExecuting, Trace, TraceExt, TraceKey, UnknownNode, trace_ref},
 };
 
 /// Storage is split by output type, so a node's action can only be found by
@@ -20,7 +20,7 @@ use crate::{
      it may store one with a different output"
 )]
 pub struct NoStoredAction {
-    pub key: ActionNodeKey,
+    pub key: TraceKey,
     pub output: &'static str,
 }
 
@@ -69,9 +69,9 @@ impl<F: FnMut(&mut Context) -> T, T> Action for F {
 }
 
 /// The stored actions whose output is `O`, one resource per output type.
-/// Entries leave when their node is removed from the tree.
+/// Entries leave when their node is removed from the trace.
 pub struct ActionStorage<O> {
-    actions: SecondaryMap<ActionNodeKey, BoxAction<O>>,
+    actions: SecondaryMap<TraceKey, BoxAction<O>>,
 }
 
 impl<O> Default for ActionStorage<O> {
@@ -83,13 +83,13 @@ impl<O> Default for ActionStorage<O> {
 }
 
 impl<O> ActionStorage<O> {
-    fn contains(&self, key: ActionNodeKey) -> bool {
+    fn contains(&self, key: TraceKey) -> bool {
         self.actions.contains_key(key)
     }
 }
 
 impl<O: 'static> NodeObserver for ActionStorage<O> {
-    fn nodes_removed(ctx: &mut Context, keys: &[ActionNodeKey]) {
+    fn nodes_removed(ctx: &mut Context, keys: &[TraceKey]) {
         if let Some(storage) = ctx.get_mut::<ActionStorage<O>>() {
             for &key in keys {
                 storage.actions.remove(key);
@@ -105,7 +105,7 @@ fn storage_mut<O: 'static>(ctx: &mut Context) -> &mut ActionStorage<O> {
     ctx.get_or_insert_with(ActionStorage::<O>::default)
 }
 
-fn store<A: Action + 'static>(ctx: &mut Context, key: ActionNodeKey, action: A) {
+fn store<A: Action + 'static>(ctx: &mut Context, key: TraceKey, action: A) {
     let replaced = storage_mut::<A::Output>(ctx)
         .actions
         .insert(key, BoxAction::new(action));
@@ -121,34 +121,34 @@ pub trait ActionExt {
     /// [`create_root_action`](Self::create_root_action) or
     /// [`create_branch_action`](Self::create_branch_action) for rerunnable
     /// actions.
-    fn run_node<A: Action>(&mut self, action: A) -> (ActionNodeKey, A::Output);
+    fn run_node<A: Action>(&mut self, action: A) -> (TraceKey, A::Output);
 
     /// Creates a root storing `action`, without running it.
-    fn create_root_action<A: Action + 'static>(&mut self, action: A) -> ActionNodeKey;
+    fn create_root_action<A: Action + 'static>(&mut self, action: A) -> TraceKey;
 
     /// Creates a child of the executing action (or a root outside execution)
     /// storing `action`, without running it.
-    fn create_branch_action<A: Action + 'static>(&mut self, action: A) -> ActionNodeKey;
+    fn create_branch_action<A: Action + 'static>(&mut self, action: A) -> TraceKey;
 
     /// Whether `key` stores an action with output `O`. Actions taken out to
     /// run aren't stored until they finish.
-    fn has_stored_action<O: 'static>(&self, key: ActionNodeKey) -> Result<bool, UnknownNode>;
+    fn has_stored_action<O: 'static>(&self, key: TraceKey) -> Result<bool, UnknownNode>;
 
     /// Reruns the action stored at `key`, whose output must be `O`, with `key`
     /// as the current action. Its descendants are removed first, so the run
     /// recreates them.
-    fn run_action<O: 'static>(&mut self, key: ActionNodeKey) -> Result<O, RunActionError>;
+    fn run_action<O: 'static>(&mut self, key: TraceKey) -> Result<O, RunActionError>;
 }
 
 impl ActionExt for Context {
-    fn has_stored_action<O: 'static>(&self, key: ActionNodeKey) -> Result<bool, UnknownNode> {
-        tree_ref(self, key)?.node(key)?;
+    fn has_stored_action<O: 'static>(&self, key: TraceKey) -> Result<bool, UnknownNode> {
+        trace_ref(self, key)?.node(key)?;
         Ok(self
             .get::<ActionStorage<O>>()
             .is_some_and(|storage| storage.contains(key)))
     }
 
-    fn run_node<A: Action>(&mut self, mut action: A) -> (ActionNodeKey, A::Output) {
+    fn run_node<A: Action>(&mut self, mut action: A) -> (TraceKey, A::Output) {
         let key = self.create_branch();
         let output = self
             .with_current_action(key, |ctx| action.run(ctx))
@@ -156,20 +156,20 @@ impl ActionExt for Context {
         (key, output)
     }
 
-    fn create_root_action<A: Action + 'static>(&mut self, action: A) -> ActionNodeKey {
+    fn create_root_action<A: Action + 'static>(&mut self, action: A) -> TraceKey {
         let key = self.create_root();
         store(self, key, action);
         key
     }
 
-    fn create_branch_action<A: Action + 'static>(&mut self, action: A) -> ActionNodeKey {
+    fn create_branch_action<A: Action + 'static>(&mut self, action: A) -> TraceKey {
         let key = self.create_branch();
         store(self, key, action);
         key
     }
 
-    fn run_action<O: 'static>(&mut self, key: ActionNodeKey) -> Result<O, RunActionError> {
-        self.get_or_insert_with(ActionTree::default).node(key)?;
+    fn run_action<O: 'static>(&mut self, key: TraceKey) -> Result<O, RunActionError> {
+        self.get_or_insert_with(Trace::default).node(key)?;
         // Also rules out executing descendants, which would make `key` an
         // ancestor of the current action.
         if self.has_executing(key) {
@@ -184,12 +184,12 @@ impl ActionExt for Context {
                 output: type_name::<O>(),
             })?;
         self.clear_children(key)
-            .expect("the node is in the tree and nothing below it is executing");
+            .expect("the node is in the trace and nothing below it is executing");
         let result = catch_unwind(AssertUnwindSafe(|| {
             self.with_current_action(key, |ctx| action.run(ctx))
-                .expect("the node is in the tree")
+                .expect("the node is in the trace")
         }));
-        // Executing nodes can't be removed, so `key` is still in the tree.
+        // Executing nodes can't be removed, so `key` is still in the trace.
         storage_mut::<O>(self).actions.insert(key, action);
         match result {
             Ok(output) => Ok(output),
@@ -254,7 +254,7 @@ mod tests {
         let key = ctx.create_root_action(|ctx: &mut Context| ctx.current_action());
 
         expect_that!(
-            ctx.run_action::<Result<ActionNodeKey, NotExecuting>>(key),
+            ctx.run_action::<Result<TraceKey, NotExecuting>>(key),
             ok(ok(eq(key)))
         );
         expect_that!(ctx.current_action(), err(eq(NotExecuting)));
@@ -265,8 +265,8 @@ mod tests {
         let mut ctx = Context::new();
         let key = ctx.create_root_action(|ctx: &mut Context| ctx.create_branch());
 
-        let first = ctx.run_action::<ActionNodeKey>(key).unwrap();
-        let second = ctx.run_action::<ActionNodeKey>(key).unwrap();
+        let first = ctx.run_action::<TraceKey>(key).unwrap();
+        let second = ctx.run_action::<TraceKey>(key).unwrap();
         expect_false!(ctx.contains_node(first));
         expect_that!(ctx.children(key), ok(eq(&[second][..])));
     }
