@@ -6,39 +6,39 @@ use crate::context::Context;
 new_key_type! {
     /// Only valid in the `Context` that created it. Using a key with another
     /// context is unsupported and may refer to an unrelated node.
-    pub struct TraceKey;
+    pub struct NodeKey;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("trace node {0:?} isn't in the trace")]
-pub struct UnknownNode(pub TraceKey);
+#[error("node {0:?} isn't in the trace")]
+pub struct UnknownNode(pub NodeKey);
 
-/// The parent passed to [`TraceNodeMut::set_parent`] isn't in the trace.
+/// The parent passed to [`NodeMut::set_parent`] isn't in the trace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("parent {:?} isn't in the trace", .0.0)]
 pub struct UnknownParent(#[source] pub UnknownNode);
 
-/// The child passed to [`TraceNodeMut::add_child`] isn't in the trace.
+/// The child passed to [`NodeMut::add_child`] isn't in the trace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("child {:?} isn't in the trace", .0.0)]
 pub struct UnknownChild(#[source] pub UnknownNode);
 
 /// The child already has a parent. Reparenting is explicit: call
-/// [`detach`](TraceNodeMut::detach) first.
+/// [`detach`](NodeMut::detach) first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "trace node {child:?} already has parent {current_parent:?}; \
+    "node {child:?} already has parent {current_parent:?}; \
      call `detach` before attaching it to {requested_parent:?}"
 )]
 pub struct AlreadyParented {
-    pub child: TraceKey,
-    pub current_parent: TraceKey,
-    pub requested_parent: TraceKey,
+    pub child: NodeKey,
+    pub current_parent: NodeKey,
+    pub requested_parent: NodeKey,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("trace node {0:?} can't be its own parent")]
-pub struct SelfParent(pub TraceKey);
+#[error("node {0:?} can't be its own parent")]
+pub struct SelfParent(pub NodeKey);
 
 /// The requested parent is a descendant of the child, `depth` levels below
 /// it.
@@ -48,19 +48,19 @@ pub struct SelfParent(pub TraceKey);
      {parent:?} is {depth} level(s) below {child:?}"
 )]
 pub struct WouldCycle {
-    pub child: TraceKey,
-    pub parent: TraceKey,
+    pub child: NodeKey,
+    pub parent: NodeKey,
     pub depth: usize,
 }
 
-/// [`TraceNodeMut::delete`] only deletes leaves.
+/// [`NodeMut::delete`] only deletes leaves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "trace node {key:?} has {children} child(ren); \
+    "node {key:?} has {children} child(ren); \
      use `delete_branch`, or detach them first"
 )]
 pub struct HasChildren {
-    pub key: TraceKey,
+    pub key: NodeKey,
     pub children: usize,
 }
 
@@ -89,10 +89,10 @@ pub enum AddChildError {
 }
 
 /// The trace resource. It holds only the shape of the trace; per-node
-/// data lives in other resources keyed by [`TraceKey`].
+/// data lives in other resources keyed by [`NodeKey`].
 ///
 /// Everything public goes through [`TraceExt`] and the node handles it
-/// returns, [`TraceNodeRef`] and [`TraceNodeMut`].
+/// returns, [`NodeRef`] and [`NodeMut`].
 ///
 /// Besides parent and children links, every node is linked to its `prev` and
 /// `next` node in trace order: each node before its descendants, siblings
@@ -103,25 +103,25 @@ pub enum AddChildError {
 /// roots never link.
 #[derive(Default)]
 pub struct Trace {
-    nodes: SlotMap<TraceKey, TraceNode>,
+    nodes: SlotMap<NodeKey, Node>,
 }
 
-struct TraceNode {
-    children: SmallVec<[TraceKey; 1]>,
-    parent: Option<TraceKey>,
-    prev: Option<TraceKey>,
-    next: Option<TraceKey>,
+struct Node {
+    children: SmallVec<[NodeKey; 1]>,
+    parent: Option<NodeKey>,
+    prev: Option<NodeKey>,
+    next: Option<NodeKey>,
 }
 
 impl Trace {
-    fn contains(&self, key: TraceKey) -> bool {
+    fn contains(&self, key: NodeKey) -> bool {
         self.nodes.contains_key(key)
     }
 
     /// The last node of `key`'s subtree in trace order: its last child's last
     /// child, and so on, or `key` itself when it's a leaf. `key` must be in
     /// the trace.
-    fn subtree_last(&self, key: TraceKey) -> TraceKey {
+    fn subtree_last(&self, key: NodeKey) -> NodeKey {
         std::iter::successors(Some(key), |&key| {
             self.nodes
                 .get(key)
@@ -136,7 +136,7 @@ impl Trace {
 
     /// Links `first` and `second` to each other. A `None` side ends the order
     /// there.
-    fn link(&mut self, first: Option<TraceKey>, second: Option<TraceKey>) {
+    fn link(&mut self, first: Option<NodeKey>, second: Option<NodeKey>) {
         if let Some(prev) = first {
             self.nodes
                 .get_mut(prev)
@@ -154,7 +154,7 @@ impl Trace {
     /// Takes the span from `span_start` to `span_end` out of its tree's order, linking
     /// the nodes on either side of it to each other. The span is left as an
     /// order of its own.
-    fn cut(&mut self, span_start: TraceKey, span_end: TraceKey) {
+    fn cut(&mut self, span_start: NodeKey, span_end: NodeKey) {
         let start = self
             .nodes
             .get(span_start)
@@ -168,7 +168,7 @@ impl Trace {
 
     /// Puts the span from `span_start` to `span_end`, which must be an order of its
     /// own, right after `put_after`.
-    fn splice(&mut self, put_after: TraceKey, span_start: TraceKey, span_end: TraceKey) {
+    fn splice(&mut self, put_after: NodeKey, span_start: NodeKey, span_end: NodeKey) {
         let next = self
             .nodes
             .get(put_after)
@@ -179,8 +179,8 @@ impl Trace {
     }
 
     /// Adds an unparented node without children, alone in its own order.
-    fn insert_root(&mut self) -> TraceKey {
-        self.nodes.insert(TraceNode {
+    fn insert_root(&mut self) -> NodeKey {
+        self.nodes.insert(Node {
             children: SmallVec::new(),
             parent: None,
             prev: None,
@@ -191,7 +191,7 @@ impl Trace {
     /// Makes `child` the last child of `parent`, moving `child`'s subtree
     /// right after `parent`'s.
     /// `child` must be in the trace.
-    fn attach(&mut self, parent: TraceKey, child: TraceKey) -> Result<(), SetParentError> {
+    fn attach(&mut self, parent: NodeKey, child: NodeKey) -> Result<(), SetParentError> {
         // check for an unknown parent
         if !self.contains(parent) {
             return Err(UnknownParent(UnknownNode(parent)).into());
@@ -255,7 +255,7 @@ impl Trace {
 
     /// Detaches `key` from its parent, cutting its subtree out into an order
     /// of its own, like a new root. Returns whether it had a parent.
-    fn detach(&mut self, key: TraceKey) -> bool {
+    fn detach(&mut self, key: NodeKey) -> bool {
         // parent check
         let Some(parent) = self
             .nodes
@@ -281,7 +281,7 @@ impl Trace {
     }
 
     /// Removes `key`, which must be a leaf, from the trace.
-    fn remove_leaf(&mut self, key: TraceKey) -> Result<(), HasChildren> {
+    fn remove_leaf(&mut self, key: NodeKey) -> Result<(), HasChildren> {
         // children check
         let children = self
             .nodes
@@ -312,43 +312,51 @@ fn trace_mut(ctx: &mut Context) -> &mut Trace {
 
 /// Read access to a node in the trace, returned by [`TraceExt::node`].
 #[derive(Clone, Copy)]
-pub struct TraceNodeRef<'a> {
-    trace: &'a Trace,
-    key: TraceKey,
+pub struct NodeRef<'a> {
+    ctx: &'a Context,
+    key: NodeKey,
 }
 
-impl<'a> TraceNodeRef<'a> {
-    fn data(&self) -> &'a TraceNode {
-        self.trace
+impl<'a> NodeRef<'a> {
+    fn data(&self) -> &'a Node {
+        self.ctx
+            .get::<Trace>()
+            .expect("a node exists, so the trace does")
             .nodes
             .get(self.key)
             .expect("the handle's node is in the trace")
     }
 
-    pub fn id(&self) -> TraceKey {
+    pub fn id(&self) -> NodeKey {
         self.key
     }
 
+    /// The context this handle reads from, for extension traits that add
+    /// per-node methods.
+    pub fn context(&self) -> &'a Context {
+        self.ctx
+    }
+
     /// The parent of this node, or `None` for a root.
-    pub fn parent(&self) -> Option<TraceKey> {
+    pub fn parent(&self) -> Option<NodeKey> {
         self.data().parent
     }
 
     /// The children of this node, first to last.
-    pub fn children(&self) -> &'a [TraceKey] {
+    pub fn children(&self) -> &'a [NodeKey] {
         &self.data().children
     }
 
     /// The node before this one in trace order, or `None` for a root.
     /// See [`Trace`] for the order.
-    pub fn prev(&self) -> Option<TraceKey> {
+    pub fn prev(&self) -> Option<NodeKey> {
         self.data().prev
     }
 
     /// The node after this one in trace order, or `None` for the last node of
     /// its tree.
     /// See [`Trace`] for the order.
-    pub fn next(&self) -> Option<TraceKey> {
+    pub fn next(&self) -> Option<NodeKey> {
         self.data().next
     }
 }
@@ -359,51 +367,65 @@ impl<'a> TraceNodeRef<'a> {
 /// Reparenting is explicit: a node that has a parent must be detached with
 /// [`detach`](Self::detach) before it's attached elsewhere. A
 /// node's whole subtree moves with it.
-pub struct TraceNodeMut<'a> {
-    // TODO: hold only `&'a mut Trace`.
+pub struct NodeMut<'a> {
     ctx: &'a mut Context,
-    key: TraceKey,
+    key: NodeKey,
 }
 
-impl TraceNodeMut<'_> {
+impl NodeMut<'_> {
     fn trace_mut(&mut self) -> &mut Trace {
         self.ctx
             .get_mut::<Trace>()
             .expect("a node exists, so the trace does")
     }
 
-    pub fn id(&self) -> TraceKey {
+    pub fn id(&self) -> NodeKey {
         self.key
     }
 
-    pub fn as_ref(&self) -> TraceNodeRef<'_> {
-        TraceNodeRef {
-            trace: self
-                .ctx
-                .get::<Trace>()
-                .expect("a node exists, so the trace does"),
+    /// The context this handle writes to, for extension traits that add
+    /// per-node methods.
+    pub fn context(&self) -> &Context {
+        self.ctx
+    }
+
+    /// Mutable access to the context this handle writes to, for extension
+    /// traits that add per-node methods.
+    ///
+    /// # Danger
+    ///
+    /// Code using the context directly can delete this node or change the
+    /// trace behind the handle's back. After that, the handle's methods may
+    /// panic. Extension traits must leave the handle's node in place.
+    pub fn context_mut(&mut self) -> &mut Context {
+        self.ctx
+    }
+
+    pub fn as_ref(&self) -> NodeRef<'_> {
+        NodeRef {
+            ctx: self.ctx,
             key: self.key,
         }
     }
 
     /// The parent of this node, or `None` for a root.
-    pub fn parent(&self) -> Option<TraceKey> {
+    pub fn parent(&self) -> Option<NodeKey> {
         self.as_ref().parent()
     }
 
     /// The children of this node, first to last.
-    pub fn children(&self) -> &[TraceKey] {
+    pub fn children(&self) -> &[NodeKey] {
         self.as_ref().children()
     }
 
     /// The node before this one in trace order, or `None` for a root.
-    pub fn prev(&self) -> Option<TraceKey> {
+    pub fn prev(&self) -> Option<NodeKey> {
         self.as_ref().prev()
     }
 
     /// The node after this one in trace order, or `None` for the last node of
     /// its tree.
-    pub fn next(&self) -> Option<TraceKey> {
+    pub fn next(&self) -> Option<NodeKey> {
         self.as_ref().next()
     }
 
@@ -411,7 +433,7 @@ impl TraceNodeMut<'_> {
     ///
     /// Fails if `parent` isn't in the trace, if this node already has a
     /// parent, or if `parent` is this node or one of its descendants.
-    pub fn set_parent(&mut self, parent: TraceKey) -> Result<&mut Self, SetParentError> {
+    pub fn set_parent(&mut self, parent: NodeKey) -> Result<&mut Self, SetParentError> {
         let key = self.key;
         self.trace_mut().attach(parent, key)?;
         Ok(self)
@@ -421,7 +443,7 @@ impl TraceNodeMut<'_> {
     ///
     /// Fails if `child` isn't in the trace, if it already has a parent, or if
     /// it's this node or one of its ancestors.
-    pub fn add_child(&mut self, child: TraceKey) -> Result<&mut Self, AddChildError> {
+    pub fn add_child(&mut self, child: NodeKey) -> Result<&mut Self, AddChildError> {
         let parent = self.key;
         self.ctx
             .node_mut(child)
@@ -453,7 +475,7 @@ impl TraceNodeMut<'_> {
     /// Deletes this node and its descendants, bottom up, one
     /// [`delete`](Self::delete) at a time. Returns the deleted keys bottom
     /// up, so this node's key is last.
-    pub fn delete_branch(self) -> Vec<TraceKey> {
+    pub fn delete_branch(self) -> Vec<NodeKey> {
         let Self { ctx, key } = self;
         let trace = ctx
             .get::<Trace>()
@@ -476,43 +498,42 @@ impl TraceNodeMut<'_> {
 
 pub trait TraceExt {
     /// Whether `key` is in the trace.
-    fn contains_node(&self, key: TraceKey) -> bool;
+    fn contains_node(&self, key: NodeKey) -> bool;
 
     /// Read access to `key`.
-    fn node(&self, key: TraceKey) -> Result<TraceNodeRef<'_>, UnknownNode>;
+    fn node(&self, key: NodeKey) -> Result<NodeRef<'_>, UnknownNode>;
 
     /// Write access to `key`.
-    fn node_mut(&mut self, key: TraceKey) -> Result<TraceNodeMut<'_>, UnknownNode>;
+    fn node_mut(&mut self, key: NodeKey) -> Result<NodeMut<'_>, UnknownNode>;
 
     /// Creates a node that is not parented and has no children. It's a root
-    /// until attached with [`set_parent`](TraceNodeMut::set_parent) or
-    /// [`add_child`](TraceNodeMut::add_child), alone in its own trace order.
-    fn create_node(&mut self) -> TraceNodeMut<'_>;
+    /// until attached with [`set_parent`](NodeMut::set_parent) or
+    /// [`add_child`](NodeMut::add_child), alone in its own trace order.
+    fn create_node(&mut self) -> NodeMut<'_>;
 }
 
 impl TraceExt for Context {
-    fn contains_node(&self, key: TraceKey) -> bool {
+    fn contains_node(&self, key: NodeKey) -> bool {
         self.get::<Trace>().is_some_and(|trace| trace.contains(key))
     }
 
-    fn node(&self, key: TraceKey) -> Result<TraceNodeRef<'_>, UnknownNode> {
-        let trace = self
-            .get::<Trace>()
-            .filter(|trace| trace.contains(key))
-            .ok_or(UnknownNode(key))?;
-        Ok(TraceNodeRef { trace, key })
-    }
-
-    fn node_mut(&mut self, key: TraceKey) -> Result<TraceNodeMut<'_>, UnknownNode> {
+    fn node(&self, key: NodeKey) -> Result<NodeRef<'_>, UnknownNode> {
         if !self.contains_node(key) {
             return Err(UnknownNode(key));
         }
-        Ok(TraceNodeMut { ctx: self, key })
+        Ok(NodeRef { ctx: self, key })
     }
 
-    fn create_node(&mut self) -> TraceNodeMut<'_> {
+    fn node_mut(&mut self, key: NodeKey) -> Result<NodeMut<'_>, UnknownNode> {
+        if !self.contains_node(key) {
+            return Err(UnknownNode(key));
+        }
+        Ok(NodeMut { ctx: self, key })
+    }
+
+    fn create_node(&mut self) -> NodeMut<'_> {
         let key = trace_mut(self).insert_root();
-        TraceNodeMut { ctx: self, key }
+        NodeMut { ctx: self, key }
     }
 }
 
@@ -522,7 +543,7 @@ mod tests {
 
     use super::*;
 
-    fn child(ctx: &mut Context, parent: TraceKey) -> TraceKey {
+    fn child(ctx: &mut Context, parent: NodeKey) -> NodeKey {
         let mut node = ctx.create_node();
         node.set_parent(parent).unwrap();
         node.id()
@@ -536,7 +557,7 @@ mod tests {
     /// └── b
     ///     └── b1
     /// ```
-    fn tree() -> (Context, TraceKey, [TraceKey; 5]) {
+    fn tree() -> (Context, NodeKey, [NodeKey; 5]) {
         let mut ctx = Context::new();
         let root = ctx.create_node().id();
         let a = child(&mut ctx, root);
@@ -550,7 +571,7 @@ mod tests {
     /// `root`'s tree following `next` from `root`, after checking that the
     /// order starts at `root`, stays inside its tree, and that `prev` links it
     /// backwards.
-    fn tree_order(ctx: &Context, root: TraceKey) -> Vec<TraceKey> {
+    fn tree_order(ctx: &Context, root: NodeKey) -> Vec<NodeKey> {
         assert_eq!(ctx.node(root).unwrap().parent(), None, "not a root");
         assert_eq!(ctx.node(root).unwrap().prev(), None, "a root has no prev");
         let forward: Vec<_> =
