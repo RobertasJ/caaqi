@@ -1,16 +1,12 @@
-use std::{
-    collections::{HashSet, hash_set},
-    f32::consts::E,
-};
+use std::collections::{HashSet, hash_set};
 
 use crate::{
     action::{Action, ActionExt, ClearChildrenError, RunActionError},
     context::Context,
-    current::{self, CurrentActionExt, NotExecuting},
+    current::{CurrentActionExt, NotExecuting},
     grouping::{GroupId, GroupingExt},
     trace::{TraceKey, UnknownNode},
     trace_iter::TraceIterExt,
-    tracking,
 };
 
 /// Identifies a set of tracked actions that can be rerun together. Backed by
