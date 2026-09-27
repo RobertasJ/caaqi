@@ -302,11 +302,12 @@ mod tests {
 
     #[gtest]
     fn run_action_rejects_unknown_nodes() {
-        let foreign = Context::new().create_root();
         let mut ctx = Context::new();
+        let removed = ctx.create_root_action(|_: &mut Context| ());
+        ctx.remove_node(removed).unwrap();
         expect_that!(
-            ctx.run_action::<()>(foreign),
-            err(eq(RunActionError::UnknownNode(UnknownNode(foreign))))
+            ctx.run_action::<()>(removed),
+            err(eq(RunActionError::UnknownNode(UnknownNode(removed))))
         );
     }
 

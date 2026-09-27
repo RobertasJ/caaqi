@@ -8,6 +8,8 @@ use crate::{
 };
 
 new_key_type! {
+    /// Only valid in the `Context` that created it. Using a key with another
+    /// context is unsupported and may refer to an unrelated node.
     pub struct ActionNodeKey;
 }
 

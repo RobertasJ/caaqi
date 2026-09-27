@@ -365,12 +365,6 @@ mod tests {
     fn add_rejects_unknown_groups() {
         let mut ctx = Context::new();
         let key = ctx.create_root();
-        let foreign = Context::new().create_group();
-        expect_that!(
-            ctx.add_to_group(foreign, key),
-            err(eq(AddToGroupError::UnknownGroup(UnknownGroup(foreign))))
-        );
-
         let removed = ctx.create_group();
         ctx.remove_group(removed).unwrap();
         expect_that!(
@@ -382,16 +376,9 @@ mod tests {
     }
 
     #[gtest]
-    fn add_rejects_nodes_outside_the_tree() {
-        let foreign = Context::new().create_root();
+    fn add_rejects_removed_nodes() {
         let mut ctx = Context::new();
         let group = ctx.create_group();
-        // No tree exists yet in `ctx`.
-        expect_that!(
-            ctx.add_to_group(group, foreign),
-            err(eq(AddToGroupError::UnknownNode(UnknownNode(foreign))))
-        );
-
         let key = ctx.create_root();
         ctx.remove_node(key).unwrap();
         expect_that!(
