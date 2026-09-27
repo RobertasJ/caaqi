@@ -9,6 +9,7 @@ use crate::{
     current::{self, CurrentActionExt, NotExecuting},
     grouping::{GroupId, GroupingExt},
     trace::{ClearChildrenError, TraceExt, TraceKey, UnknownNode},
+    trace_iter::TraceIterExt,
     tracking,
 };
 

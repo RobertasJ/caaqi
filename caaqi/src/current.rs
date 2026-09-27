@@ -2,7 +2,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 
 use crate::{
     context::Context,
-    trace::{Trace, TraceExt, TraceKey, UnknownNode},
+    trace::{TraceExt, TraceKey, UnknownNode},
+    trace_iter::TraceIterExt,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -55,7 +56,7 @@ impl CurrentActionExt for Context {
         key: TraceKey,
         f: impl FnOnce(&mut Context) -> R,
     ) -> Result<R, UnknownNode> {
-        self.get_or_insert_with(Trace::default).node(key)?;
+        self.parent(key)?;
         let previous = self
             .get_or_insert_with(CurrentAction::default)
             .0
@@ -74,7 +75,7 @@ mod tests {
     use googletest::prelude::*;
 
     use super::*;
-    use crate::action::ActionExt;
+    use crate::{action::ActionExt, trace::TraceExt};
 
     #[gtest]
     fn current_root_walks_up_to_the_root() {

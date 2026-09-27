@@ -60,95 +60,11 @@ pub struct Trace {
     last: Option<TraceKey>,
 }
 
-pub(crate) struct TraceNode {
+struct TraceNode {
     children: SmallVec<[TraceKey; 1]>,
     parent: Option<TraceKey>,
     prev: Option<TraceKey>,
     next: Option<TraceKey>,
-}
-
-/// A walk over a node and its descendants, each before its own descendants.
-/// [`skip_children`](Self::skip_children) keeps the walk out of the children
-/// of the node it just returned.
-///
-/// It borrows the trace; use [`into_cursor`](Self::into_cursor) to walk while
-/// changing the context.
-pub struct TopDownWalk<'a> {
-    tree: &'a Trace,
-    cursor: TopDownCursor,
-}
-
-impl TopDownWalk<'_> {
-    /// Skips the descendants of the node `next` returned last. Does nothing
-    /// before the first `next`, or when called twice in a row.
-    pub fn skip_children(&mut self) {
-        self.cursor.skip_children();
-    }
-
-    /// Continues this walk without borrowing the tree.
-    pub fn into_cursor(self) -> TopDownCursor {
-        self.cursor
-    }
-}
-
-impl Iterator for TopDownWalk<'_> {
-    type Item = TraceKey;
-
-    fn next(&mut self) -> Option<TraceKey> {
-        self.cursor.next_in(self.tree)
-    }
-}
-
-/// A [`TopDownWalk`] that doesn't borrow the tree: each
-/// [`next`](Self::next) takes the context instead, so the context can be
-/// changed between calls.
-///
-/// A node's children are read on the `next` call after it's returned, so a
-/// node rerun in between has its new children walked, unless
-/// [`skip_children`](Self::skip_children) is called. Nodes removed in between
-/// are skipped.
-pub struct TopDownCursor {
-    pending: Vec<TraceKey>,
-    /// The node returned last, whose children haven't been queued yet.
-    /// They're queued on the next `next` call, so `skip_children` can drop
-    /// them first.
-    last: Option<TraceKey>,
-    siblings_rev: bool,
-}
-
-impl TopDownCursor {
-    /// Skips the descendants of the node `next` returned last. Does nothing
-    /// before the first `next`, or when called twice in a row.
-    pub fn skip_children(&mut self) {
-        self.last = None;
-    }
-
-    /// The next node of the walk, or `None` once it's done.
-    pub fn next(&mut self, ctx: &Context) -> Option<TraceKey> {
-        // Without a tree, every node has been removed.
-        let Some(tree) = ctx.get::<Trace>() else {
-            self.pending.clear();
-            self.last = None;
-            return None;
-        };
-        self.next_in(tree)
-    }
-
-    fn next_in(&mut self, tree: &Trace) -> Option<TraceKey> {
-        if let Some(node) = self.last.take().and_then(|last| tree.nodes.get(last)) {
-            let children = node.children.iter().copied();
-            if self.siblings_rev {
-                self.pending.extend(children);
-            } else {
-                self.pending.extend(children.rev());
-            }
-        }
-        // Nodes removed since they were queued are skipped, along with their
-        // descendants, which were removed with them.
-        let key = std::iter::from_fn(|| self.pending.pop()).find(|&key| tree.contains(key))?;
-        self.last = Some(key);
-        Some(key)
-    }
 }
 
 impl Trace {
@@ -156,7 +72,7 @@ impl Trace {
         self.nodes.contains_key(key)
     }
 
-    pub(crate) fn node(&self, key: TraceKey) -> Result<&TraceNode, UnknownNode> {
+    fn node(&self, key: TraceKey) -> Result<&TraceNode, UnknownNode> {
         self.nodes.get(key).ok_or(UnknownNode(key))
     }
 
@@ -198,77 +114,6 @@ impl Trace {
         }
     }
 
-    fn ancestors(&self, key: TraceKey) -> Result<impl Iterator<Item = TraceKey> + '_, UnknownNode> {
-        let parent = self.parent(key)?;
-        // Parents of nodes in the trace are in the trace too.
-        Ok(std::iter::successors(parent, |&key| self.nodes[key].parent))
-    }
-
-    /// Iterates `key` and its descendants, each before its own descendants,
-    /// siblings last to first when `siblings_rev`. `key` must be in the trace.
-    fn parents_first(&self, key: TraceKey, siblings_rev: bool) -> TopDownWalk<'_> {
-        TopDownWalk {
-            tree: self,
-            cursor: TopDownCursor {
-                pending: vec![key],
-                last: None,
-                siblings_rev,
-            },
-        }
-    }
-
-    /// Iterates `key` and its descendants, each after its own descendants,
-    /// siblings last to first when `siblings_rev`. `key` must be in the trace.
-    fn children_first(
-        &self,
-        key: TraceKey,
-        siblings_rev: bool,
-    ) -> impl Iterator<Item = TraceKey> + '_ {
-        // `true` once a node's children have been pushed above it.
-        let mut pending = vec![(key, false)];
-        std::iter::from_fn(move || {
-            loop {
-                let (key, expanded) = pending.pop()?;
-                if expanded {
-                    return Some(key);
-                }
-                pending.push((key, true));
-                let children = self.nodes[key].children.iter().map(|&child| (child, false));
-                if siblings_rev {
-                    pending.extend(children);
-                } else {
-                    pending.extend(children.rev());
-                }
-            }
-        })
-    }
-
-    fn subtree_top_down(&self, key: TraceKey) -> Result<TopDownWalk<'_>, UnknownNode> {
-        self.node(key)?;
-        Ok(self.parents_first(key, false))
-    }
-
-    fn subtree_top_down_rev(&self, key: TraceKey) -> Result<TopDownWalk<'_>, UnknownNode> {
-        self.node(key)?;
-        Ok(self.parents_first(key, true))
-    }
-
-    fn subtree_bottom_up(
-        &self,
-        key: TraceKey,
-    ) -> Result<impl Iterator<Item = TraceKey> + '_, UnknownNode> {
-        self.node(key)?;
-        Ok(self.children_first(key, false))
-    }
-
-    fn subtree_bottom_up_rev(
-        &self,
-        key: TraceKey,
-    ) -> Result<impl Iterator<Item = TraceKey> + '_, UnknownNode> {
-        self.node(key)?;
-        Ok(self.children_first(key, true))
-    }
-
     fn insert(&mut self, parent: Option<TraceKey>) -> TraceKey {
         // Checked before inserting so a bad parent can't leave an orphan behind.
         if let Some(parent) = parent {
@@ -299,12 +144,20 @@ impl Trace {
         key
     }
 
-    /// Removes every descendant of `key`, returning the removed keys bottom up.
+    /// Removes every descendant of `key`, returning the removed keys bottom up
+    /// (reverse trace order).
     fn remove_descendants(&mut self, key: TraceKey) -> Result<Vec<TraceKey>, UnknownNode> {
-        let mut removed: Vec<_> = self.subtree_bottom_up(key)?.collect();
-        // `key` comes last, and stays.
-        removed.pop();
-        let after = self.nodes[self.subtree_last(key)].next;
+        self.node(key)?;
+        // The descendants are the nodes right after `key` in trace order, up
+        // to its subtree's last node.
+        let last = self.subtree_last(key);
+        let mut removed: Vec<_> = std::iter::successors(Some(key), |&node| {
+            (node != last).then(|| self.nodes[node].next.expect("`last` comes later"))
+        })
+        .skip(1)
+        .collect();
+        removed.reverse();
+        let after = self.nodes[last].next;
         self.link(Some(key), after);
         for &key in &removed {
             self.nodes.remove(key);
@@ -339,7 +192,7 @@ fn trace_mut(ctx: &mut Context) -> &mut Trace {
 }
 
 /// The tree, for a read about `key`. Without a tree no node exists yet.
-pub(crate) fn trace_ref(ctx: &Context, key: TraceKey) -> Result<&Trace, UnknownNode> {
+fn trace_ref(ctx: &Context, key: TraceKey) -> Result<&Trace, UnknownNode> {
     ctx.get::<Trace>().ok_or(UnknownNode(key))
 }
 
@@ -359,33 +212,6 @@ pub trait TraceExt {
     /// The node after `key` in trace order, or `None` for the last node.
     /// See [`Trace`] for the order.
     fn next(&self, key: TraceKey) -> Result<Option<TraceKey>, UnknownNode>;
-
-    /// Walks up from the parent of `key` to its root.
-    fn ancestors(&self, key: TraceKey) -> Result<impl Iterator<Item = TraceKey> + '_, UnknownNode>;
-
-    /// Iterates `key` and its descendants, each before its own descendants,
-    /// so `key` comes first. Call
-    /// [`skip_children`](TopDownWalk::skip_children) to skip the descendants
-    /// of the node just returned.
-    fn subtree_top_down(&self, key: TraceKey) -> Result<TopDownWalk<'_>, UnknownNode>;
-
-    /// [`subtree_top_down`](Self::subtree_top_down) with siblings last to
-    /// first.
-    fn subtree_top_down_rev(&self, key: TraceKey) -> Result<TopDownWalk<'_>, UnknownNode>;
-
-    /// Iterates `key` and its descendants, each after its own descendants, so
-    /// `key` comes last.
-    fn subtree_bottom_up(
-        &self,
-        key: TraceKey,
-    ) -> Result<impl Iterator<Item = TraceKey> + '_, UnknownNode>;
-
-    /// [`subtree_bottom_up`](Self::subtree_bottom_up) with siblings last to
-    /// first.
-    fn subtree_bottom_up_rev(
-        &self,
-        key: TraceKey,
-    ) -> Result<impl Iterator<Item = TraceKey> + '_, UnknownNode>;
 
     /// Creates a root, even when another action is executing.
     fn create_root(&mut self) -> TraceKey;
@@ -429,32 +255,6 @@ impl TraceExt for Context {
         trace_ref(self, key)?.next(key)
     }
 
-    fn ancestors(&self, key: TraceKey) -> Result<impl Iterator<Item = TraceKey> + '_, UnknownNode> {
-        trace_ref(self, key)?.ancestors(key)
-    }
-
-    fn subtree_top_down(&self, key: TraceKey) -> Result<TopDownWalk<'_>, UnknownNode> {
-        trace_ref(self, key)?.subtree_top_down(key)
-    }
-
-    fn subtree_top_down_rev(&self, key: TraceKey) -> Result<TopDownWalk<'_>, UnknownNode> {
-        trace_ref(self, key)?.subtree_top_down_rev(key)
-    }
-
-    fn subtree_bottom_up(
-        &self,
-        key: TraceKey,
-    ) -> Result<impl Iterator<Item = TraceKey> + '_, UnknownNode> {
-        trace_ref(self, key)?.subtree_bottom_up(key)
-    }
-
-    fn subtree_bottom_up_rev(
-        &self,
-        key: TraceKey,
-    ) -> Result<impl Iterator<Item = TraceKey> + '_, UnknownNode> {
-        trace_ref(self, key)?.subtree_bottom_up_rev(key)
-    }
-
     fn create_root(&mut self) -> TraceKey {
         let key = trace_mut(self).insert(None);
         notify_node_added(self, key);
@@ -478,9 +278,11 @@ impl TraceExt for Context {
         let Ok(current) = self.current_action() else {
             return false;
         };
-        self.ancestors(current)
-            .expect("the current action is in the trace")
-            .any(|ancestor| ancestor == key)
+        let parent = |key| {
+            self.parent(key)
+                .expect("the current action and its ancestors are in the trace")
+        };
+        std::iter::successors(parent(current), |&key| parent(key)).any(|ancestor| ancestor == key)
     }
 
     fn clear_children(&mut self, key: TraceKey) -> Result<Vec<TraceKey>, ClearChildrenError> {
@@ -580,125 +382,6 @@ mod tests {
     }
 
     #[gtest]
-    fn subtree_top_down_visits_parents_first() {
-        let (tree, root, [a, a1, a2, b, b1]) = tree();
-        let order: Vec<_> = tree.subtree_top_down(root).unwrap().collect();
-        expect_eq!(order, [root, a, a1, a2, b, b1]);
-    }
-
-    #[gtest]
-    fn skip_children_skips_the_last_returned_subtree() {
-        let (tree, root, [a, _, _, b, b1]) = tree();
-        let mut walk = tree.subtree_top_down(root).unwrap();
-        let mut order = Vec::new();
-        while let Some(key) = walk.next() {
-            order.push(key);
-            if key == a {
-                walk.skip_children();
-            }
-        }
-        expect_eq!(order, [root, a, b, b1]);
-    }
-
-    #[gtest]
-    fn skip_children_before_next_does_nothing() {
-        let (tree, root, [a, a1, a2, b, b1]) = tree();
-        let mut walk = tree.subtree_top_down(root).unwrap();
-        walk.skip_children();
-        expect_eq!(walk.collect::<Vec<_>>(), [root, a, a1, a2, b, b1]);
-    }
-
-    #[gtest]
-    fn skip_children_at_the_start_node_ends_the_walk() {
-        let (tree, root, _) = tree();
-        let mut walk = tree.subtree_top_down(root).unwrap();
-        expect_that!(walk.next(), some(eq(root)));
-        walk.skip_children();
-        expect_that!(walk.next(), none());
-    }
-
-    #[gtest]
-    fn subtree_bottom_up_visits_children_first() {
-        let (tree, root, [a, a1, a2, b, b1]) = tree();
-        let order: Vec<_> = tree.subtree_bottom_up(root).unwrap().collect();
-        expect_eq!(order, [a1, a2, a, b1, b, root]);
-    }
-
-    #[gtest]
-    fn rev_variants_reverse_sibling_order() {
-        let (tree, root, [a, a1, a2, b, b1]) = tree();
-        expect_eq!(
-            tree.subtree_top_down_rev(root).unwrap().collect::<Vec<_>>(),
-            [root, b, b1, a, a2, a1]
-        );
-        expect_eq!(
-            tree.subtree_bottom_up_rev(root)
-                .unwrap()
-                .collect::<Vec<_>>(),
-            [b1, b, a2, a1, a, root]
-        );
-    }
-
-    /// A context with a root that has children `a` and `b`, and `a` has a
-    /// child.
-    fn ctx_tree() -> (Context, [TraceKey; 4]) {
-        let mut ctx = Context::new();
-        let root = ctx.create_root();
-        let (a, a_child, b) = ctx
-            .with_current_action(root, |ctx| {
-                let a = ctx.create_branch();
-                let a_child = ctx
-                    .with_current_action(a, |ctx| ctx.create_branch())
-                    .unwrap();
-                (a, a_child, ctx.create_branch())
-            })
-            .unwrap();
-        (ctx, [root, a, a_child, b])
-    }
-
-    #[gtest]
-    fn cursor_walks_while_the_tree_changes() {
-        let (mut ctx, [root, a, _, b]) = ctx_tree();
-        let mut cursor = ctx.subtree_top_down(root).unwrap().into_cursor();
-        let mut order = Vec::new();
-        while let Some(key) = cursor.next(&ctx) {
-            order.push(key);
-            if key == a {
-                ctx.clear_children(a).unwrap();
-            }
-        }
-        expect_eq!(order, [root, a, b]);
-    }
-
-    #[gtest]
-    fn cursor_skips_nodes_removed_after_being_queued() {
-        let (mut ctx, [root, a, a_child, b]) = ctx_tree();
-        let mut cursor = ctx.subtree_top_down(root).unwrap().into_cursor();
-        let mut order = Vec::new();
-        while let Some(key) = cursor.next(&ctx) {
-            order.push(key);
-            if key == a {
-                ctx.remove_node(b).unwrap();
-            }
-        }
-        expect_eq!(order, [root, a, a_child]);
-    }
-
-    #[gtest]
-    fn top_down_rev_can_skip_children() {
-        let (tree, root, [a, a1, a2, b, _]) = tree();
-        let mut walk = tree.subtree_top_down_rev(root).unwrap();
-        let mut order = Vec::new();
-        while let Some(key) = walk.next() {
-            order.push(key);
-            if key == b {
-                walk.skip_children();
-            }
-        }
-        expect_eq!(order, [root, b, a, a2, a1]);
-    }
-
-    #[gtest]
     fn reads_reject_unknown_nodes() {
         let (mut tree, _, [a, a1, ..]) = tree();
         tree.remove_branch(a).unwrap();
@@ -707,22 +390,7 @@ mod tests {
         expect_that!(tree.children(a), err(eq(UnknownNode(a))));
         expect_that!(tree.prev(a1), err(eq(UnknownNode(a1))));
         expect_that!(tree.next(a1), err(eq(UnknownNode(a1))));
-        expect_true!(tree.ancestors(a1).is_err());
-        expect_true!(tree.subtree_top_down(a).is_err());
         expect_that!(tree.remove_branch(a), err(eq(&UnknownNode(a))));
         expect_that!(tree.remove_descendants(a), err(eq(&UnknownNode(a))));
-    }
-
-    #[gtest]
-    fn leaf_subtree_is_just_the_leaf() {
-        let (tree, _, [_, a1, ..]) = tree();
-        expect_that!(
-            tree.subtree_top_down(a1).unwrap().collect::<Vec<_>>(),
-            elements_are![eq(&a1)]
-        );
-        expect_that!(
-            tree.subtree_bottom_up_rev(a1).unwrap().collect::<Vec<_>>(),
-            elements_are![eq(&a1)]
-        );
     }
 }

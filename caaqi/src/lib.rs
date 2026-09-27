@@ -5,6 +5,7 @@ pub mod grouping;
 pub mod id;
 pub mod lifecycle;
 pub mod trace;
+pub mod trace_iter;
 pub mod tracking;
 
 pub mod prelude {
@@ -18,9 +19,10 @@ pub mod prelude {
         },
         lifecycle::{LifecycleExt, NodeObserver},
         trace::{
-            ClearChildrenError, ExecutingDescendant, NodeExecuting, RemoveNodeError, TopDownCursor,
-            TopDownWalk, Trace, TraceExt, TraceKey, UnknownNode,
+            ClearChildrenError, ExecutingDescendant, NodeExecuting, RemoveNodeError, Trace,
+            TraceExt, TraceKey, UnknownNode,
         },
+        trace_iter::{TopDownCursor, TopDownWalk, TraceIterExt},
         tracking::{
             RerunNeeded, RunTrackedError, ToNotify, TrackError, TrackingExt, TrackingId,
             UnknownTrackingId,

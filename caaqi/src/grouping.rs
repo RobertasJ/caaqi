@@ -6,7 +6,7 @@ use crate::{
     context::Context,
     id::Id,
     lifecycle::{LifecycleExt, NodeObserver},
-    trace::{Trace, TraceKey, UnknownNode, trace_ref},
+    trace::{TraceExt, TraceKey, UnknownNode},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -188,7 +188,7 @@ impl GroupingExt for Context {
     }
 
     fn group_contains(&self, group: GroupId, key: TraceKey) -> Result<bool, GroupContainsError> {
-        trace_ref(self, key)?.node(key)?;
+        self.parent(key)?;
         Ok(groups(self, group)?.contains(group, key)?)
     }
 
@@ -200,7 +200,7 @@ impl GroupingExt for Context {
     }
 
     fn groups_of(&self, key: TraceKey) -> Result<impl Iterator<Item = GroupId>, UnknownNode> {
-        trace_ref(self, key)?.node(key)?;
+        self.parent(key)?;
         Ok(self
             .get::<Groups>()
             .into_iter()
@@ -223,7 +223,7 @@ impl GroupingExt for Context {
     }
 
     fn add_to_group(&mut self, group: GroupId, key: TraceKey) -> Result<bool, AddToGroupError> {
-        self.get_or_insert_with(Trace::default).node(key)?;
+        self.parent(key)?;
         Ok(groups_mut(self).add_membership(group, key)?)
     }
 
@@ -232,7 +232,7 @@ impl GroupingExt for Context {
         group: GroupId,
         key: TraceKey,
     ) -> Result<bool, RemoveFromGroupError> {
-        self.get_or_insert_with(Trace::default).node(key)?;
+        self.parent(key)?;
         Ok(groups_mut(self).remove_membership(group, key)?)
     }
 }

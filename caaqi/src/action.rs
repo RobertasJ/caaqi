@@ -9,7 +9,7 @@ use crate::{
     context::Context,
     current::CurrentActionExt,
     lifecycle::{LifecycleExt, NodeObserver},
-    trace::{NodeExecuting, Trace, TraceExt, TraceKey, UnknownNode, trace_ref},
+    trace::{NodeExecuting, TraceExt, TraceKey, UnknownNode},
 };
 
 /// Storage is split by output type, so a node's action can only be found by
@@ -142,7 +142,7 @@ pub trait ActionExt {
 
 impl ActionExt for Context {
     fn has_stored_action<O: 'static>(&self, key: TraceKey) -> Result<bool, UnknownNode> {
-        trace_ref(self, key)?.node(key)?;
+        self.parent(key)?;
         Ok(self
             .get::<ActionStorage<O>>()
             .is_some_and(|storage| storage.contains(key)))
@@ -169,7 +169,7 @@ impl ActionExt for Context {
     }
 
     fn run_action<O: 'static>(&mut self, key: TraceKey) -> Result<O, RunActionError> {
-        self.get_or_insert_with(Trace::default).node(key)?;
+        self.parent(key)?;
         // Also rules out executing descendants, which would make `key` an
         // ancestor of the current action.
         if self.has_executing(key) {
