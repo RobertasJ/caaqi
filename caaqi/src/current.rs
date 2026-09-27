@@ -33,6 +33,15 @@ pub trait CurrentActionExt {
         key: TraceKey,
         f: impl FnOnce(&mut Context) -> R,
     ) -> Result<R, UnknownNode>;
+
+    /// Creates a child of the executing action, or a root outside execution.
+    fn create_branch(&mut self) -> TraceKey;
+
+    /// Whether `key` is the current action or one of its ancestors.
+    fn has_executing(&self, key: TraceKey) -> bool;
+
+    /// Whether the current action is a strict descendant of `key`.
+    fn has_executing_descendant(&self, key: TraceKey) -> bool;
 }
 
 impl CurrentActionExt for Context {
@@ -56,7 +65,7 @@ impl CurrentActionExt for Context {
         key: TraceKey,
         f: impl FnOnce(&mut Context) -> R,
     ) -> Result<R, UnknownNode> {
-        self.parent(key)?;
+        self.node(key)?;
         let previous = self
             .get_or_insert_with(CurrentAction::default)
             .0
@@ -67,6 +76,31 @@ impl CurrentActionExt for Context {
             Ok(result) => Ok(result),
             Err(panic) => resume_unwind(panic),
         }
+    }
+
+    fn create_branch(&mut self) -> TraceKey {
+        let parent = self.current_action().ok();
+        let mut node = self.create_node();
+        if let Some(parent) = parent {
+            node.set_parent(parent)
+                .expect("the current action is in the trace and the node is new");
+        }
+        node.id()
+    }
+
+    fn has_executing(&self, key: TraceKey) -> bool {
+        self.current_action() == Ok(key) || self.has_executing_descendant(key)
+    }
+
+    fn has_executing_descendant(&self, key: TraceKey) -> bool {
+        // Actions only run nested inside the current one, so the only
+        // executing actions are the current one and its ancestors.
+        let Ok(current) = self.current_action() else {
+            return false;
+        };
+        self.ancestors(current)
+            .expect("the current action is in the trace")
+            .any(|ancestor| ancestor == key)
     }
 }
 
@@ -96,7 +130,7 @@ mod tests {
     #[gtest]
     fn unknown_keys_are_refused_without_running() {
         let mut ctx = Context::new();
-        let removed = ctx.create_root();
+        let removed = ctx.create_node().id();
         ctx.remove_node(removed).unwrap();
 
         let mut ran = false;

@@ -64,8 +64,8 @@ impl TopDownCursor {
     /// The next node of the walk, or `None` once it's done.
     pub fn next(&mut self, ctx: &Context) -> Option<TraceKey> {
         // A node removed since it was returned has no children left to walk.
-        if let Some(Ok(children)) = self.last.take().map(|last| ctx.children(last)) {
-            let children = children.iter().copied();
+        if let Some(Ok(node)) = self.last.take().map(|last| ctx.node(last)) {
+            let children = node.children().iter().copied();
             if self.siblings_rev {
                 self.pending.extend(children);
             } else {
@@ -87,7 +87,7 @@ fn parents_first(
     key: TraceKey,
     siblings_rev: bool,
 ) -> Result<TopDownWalk<'_>, UnknownNode> {
-    ctx.children(key)?;
+    ctx.node(key)?;
     Ok(TopDownWalk {
         ctx,
         cursor: TopDownCursor {
@@ -105,7 +105,7 @@ fn children_first(
     key: TraceKey,
     siblings_rev: bool,
 ) -> Result<impl Iterator<Item = TraceKey> + '_, UnknownNode> {
-    ctx.children(key)?;
+    ctx.node(key)?;
     // `true` once a node's children have been pushed above it.
     let mut pending = vec![(key, false)];
     Ok(std::iter::from_fn(move || {
@@ -117,8 +117,9 @@ fn children_first(
             pending.push((key, true));
             // The walk borrows the context, so nothing is removed during it.
             let children = ctx
-                .children(key)
+                .node(key)
                 .expect("descendants of a node in the trace are in the trace")
+                .children()
                 .iter()
                 .map(|&child| (child, false));
             if siblings_rev {
@@ -131,7 +132,8 @@ fn children_first(
 }
 
 /// Walks over the trace. The single steps (`parent`, `children`, `prev`,
-/// `next`) are on [`TraceExt`].
+/// `next`) are on [`TraceNodeRef`](crate::trace::TraceNodeRef), from
+/// [`TraceExt::node`].
 pub trait TraceIterExt {
     /// Walks up from the parent of `key` to its root.
     fn ancestors(&self, key: TraceKey) -> Result<impl Iterator<Item = TraceKey> + '_, UnknownNode>;
@@ -164,12 +166,14 @@ pub trait TraceIterExt {
 impl TraceIterExt for Context {
     fn ancestors(&self, key: TraceKey) -> Result<impl Iterator<Item = TraceKey> + '_, UnknownNode> {
         let parent = |key| {
-            self.parent(key)
+            self.node(key)
                 .expect("parents of nodes in the trace are in the trace")
+                .parent()
         };
-        Ok(std::iter::successors(self.parent(key)?, move |&key| {
-            parent(key)
-        }))
+        Ok(std::iter::successors(
+            self.node(key)?.parent(),
+            move |&key| parent(key),
+        ))
     }
 
     fn subtree_top_down(&self, key: TraceKey) -> Result<TopDownWalk<'_>, UnknownNode> {
@@ -200,7 +204,7 @@ mod tests {
     use googletest::prelude::*;
 
     use super::*;
-    use crate::current::CurrentActionExt;
+    use crate::{action::ActionExt, current::CurrentActionExt};
 
     /// ```text
     /// root
@@ -212,7 +216,7 @@ mod tests {
     /// ```
     fn tree() -> (Context, TraceKey, [TraceKey; 5]) {
         let mut ctx = Context::new();
-        let root = ctx.create_root();
+        let root = ctx.create_node().id();
         let nodes = ctx
             .with_current_action(root, |ctx| {
                 let a = ctx.create_branch();
@@ -233,7 +237,7 @@ mod tests {
     /// child.
     fn ctx_tree() -> (Context, [TraceKey; 4]) {
         let mut ctx = Context::new();
-        let root = ctx.create_root();
+        let root = ctx.create_node().id();
         let (a, a_child, b) = ctx
             .with_current_action(root, |ctx| {
                 let a = ctx.create_branch();

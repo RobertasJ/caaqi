@@ -9,8 +9,32 @@ use crate::{
     context::Context,
     current::CurrentActionExt,
     lifecycle::{LifecycleExt, NodeObserver},
-    trace::{NodeExecuting, TraceExt, TraceKey, UnknownNode},
+    trace::{TraceExt, TraceKey, UnknownNode},
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("action node {0:?} is executing")]
+pub struct NodeExecuting(pub TraceKey);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("action node {0:?} has an executing descendant")]
+pub struct ExecutingDescendant(pub TraceKey);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ClearChildrenError {
+    #[error(transparent)]
+    UnknownNode(#[from] UnknownNode),
+    #[error(transparent)]
+    ExecutingDescendant(#[from] ExecutingDescendant),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum RemoveNodeError {
+    #[error(transparent)]
+    UnknownNode(#[from] UnknownNode),
+    #[error(transparent)]
+    NodeExecuting(#[from] NodeExecuting),
+}
 
 /// Storage is split by output type, so a node's action can only be found by
 /// asking for the output it was stored with.
@@ -138,11 +162,19 @@ pub trait ActionExt {
     /// as the current action. Its descendants are removed first, so the run
     /// recreates them.
     fn run_action<O: 'static>(&mut self, key: TraceKey) -> Result<O, RunActionError>;
+
+    /// Removes every descendant of `key`, returning the removed keys bottom
+    /// up.
+    fn clear_children(&mut self, key: TraceKey) -> Result<Vec<TraceKey>, ClearChildrenError>;
+
+    /// Removes `key` and its descendants, returning the removed keys bottom
+    /// up.
+    fn remove_node(&mut self, key: TraceKey) -> Result<Vec<TraceKey>, RemoveNodeError>;
 }
 
 impl ActionExt for Context {
     fn has_stored_action<O: 'static>(&self, key: TraceKey) -> Result<bool, UnknownNode> {
-        self.parent(key)?;
+        self.node(key)?;
         Ok(self
             .get::<ActionStorage<O>>()
             .is_some_and(|storage| storage.contains(key)))
@@ -157,7 +189,7 @@ impl ActionExt for Context {
     }
 
     fn create_root_action<A: Action + 'static>(&mut self, action: A) -> TraceKey {
-        let key = self.create_root();
+        let key = self.create_node().id();
         store(self, key, action);
         key
     }
@@ -169,7 +201,7 @@ impl ActionExt for Context {
     }
 
     fn run_action<O: 'static>(&mut self, key: TraceKey) -> Result<O, RunActionError> {
-        self.parent(key)?;
+        self.node(key)?;
         // Also rules out executing descendants, which would make `key` an
         // ancestor of the current action.
         if self.has_executing(key) {
@@ -196,6 +228,32 @@ impl ActionExt for Context {
             Err(panic) => resume_unwind(panic),
         }
     }
+
+    fn clear_children(&mut self, key: TraceKey) -> Result<Vec<TraceKey>, ClearChildrenError> {
+        // An unknown node can't be executing, so it reaches `node_mut`'s check.
+        if self.has_executing_descendant(key) {
+            return Err(ExecutingDescendant(key).into());
+        }
+        let children = self.node_mut(key)?.children().to_vec();
+        // Last child first, so the removed keys are in reverse trace order.
+        let mut removed = Vec::new();
+        for child in children.into_iter().rev() {
+            removed.extend(
+                self.node_mut(child)
+                    .expect("children are in the trace")
+                    .delete_branch(),
+            );
+        }
+        Ok(removed)
+    }
+
+    fn remove_node(&mut self, key: TraceKey) -> Result<Vec<TraceKey>, RemoveNodeError> {
+        // An unknown node can't be executing, so it reaches `node_mut`'s check.
+        if self.has_executing(key) {
+            return Err(NodeExecuting(key).into());
+        }
+        Ok(self.node_mut(key)?.delete_branch())
+    }
 }
 
 #[cfg(test)]
@@ -218,19 +276,19 @@ mod tests {
 
         expect_eq!(runs.get(), 0);
         expect_that!(ctx.has_stored_action::<()>(key), ok(eq(true)));
-        expect_that!(ctx.parent(key), ok(none()));
+        expect_that!(ctx.node(key).unwrap().parent(), none());
     }
 
     #[gtest]
     fn create_branch_action_parents_under_the_current_action_if_any() {
         let mut ctx = Context::new();
         let root = ctx.create_branch_action(|_: &mut Context| ());
-        expect_that!(ctx.parent(root), ok(none()));
+        expect_that!(ctx.node(root).unwrap().parent(), none());
         expect_that!(ctx.has_stored_action::<()>(root), ok(eq(true)));
 
         let (parent, child) =
             ctx.run_node(|ctx: &mut Context| ctx.create_branch_action(|_: &mut Context| 1));
-        expect_that!(ctx.parent(child), ok(some(eq(parent))));
+        expect_that!(ctx.node(child).unwrap().parent(), some(eq(parent)));
         expect_that!(ctx.has_stored_action::<i32>(child), ok(eq(true)));
     }
 
@@ -268,7 +326,7 @@ mod tests {
         let first = ctx.run_action::<TraceKey>(key).unwrap();
         let second = ctx.run_action::<TraceKey>(key).unwrap();
         expect_false!(ctx.contains_node(first));
-        expect_that!(ctx.children(key), ok(eq(&[second][..])));
+        expect_eq!(ctx.node(key).unwrap().children(), &[second]);
     }
 
     #[gtest]
@@ -289,7 +347,7 @@ mod tests {
     #[gtest]
     fn run_action_rejects_nodes_without_an_action() {
         let mut ctx = Context::new();
-        let key = ctx.create_root();
+        let key = ctx.create_node().id();
 
         expect_that!(
             ctx.run_action::<()>(key),

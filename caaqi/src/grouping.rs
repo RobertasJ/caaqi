@@ -188,7 +188,7 @@ impl GroupingExt for Context {
     }
 
     fn group_contains(&self, group: GroupId, key: TraceKey) -> Result<bool, GroupContainsError> {
-        self.parent(key)?;
+        self.node(key)?;
         Ok(groups(self, group)?.contains(group, key)?)
     }
 
@@ -200,7 +200,7 @@ impl GroupingExt for Context {
     }
 
     fn groups_of(&self, key: TraceKey) -> Result<impl Iterator<Item = GroupId>, UnknownNode> {
-        self.parent(key)?;
+        self.node(key)?;
         Ok(self
             .get::<Groups>()
             .into_iter()
@@ -223,7 +223,7 @@ impl GroupingExt for Context {
     }
 
     fn add_to_group(&mut self, group: GroupId, key: TraceKey) -> Result<bool, AddToGroupError> {
-        self.parent(key)?;
+        self.node(key)?;
         Ok(groups_mut(self).add_membership(group, key)?)
     }
 
@@ -232,7 +232,7 @@ impl GroupingExt for Context {
         group: GroupId,
         key: TraceKey,
     ) -> Result<bool, RemoveFromGroupError> {
-        self.parent(key)?;
+        self.node(key)?;
         Ok(groups_mut(self).remove_membership(group, key)?)
     }
 }
@@ -243,11 +243,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        action::ActionExt,
-        current::CurrentActionExt,
-        trace::{
-            ClearChildrenError, ExecutingDescendant, NodeExecuting, RemoveNodeError, TraceExt,
+        action::{
+            ActionExt, ClearChildrenError, ExecutingDescendant, NodeExecuting, RemoveNodeError,
         },
+        current::CurrentActionExt,
     };
 
     fn members(ctx: &Context, group: GroupId) -> HashSet<TraceKey> {
@@ -318,7 +317,7 @@ mod tests {
     fn add_records_both_directions() {
         let mut ctx = Context::new();
         let group = ctx.create_group();
-        let key = ctx.create_root();
+        let key = ctx.create_node().id();
 
         expect_that!(ctx.add_to_group(group, key), ok(eq(true)));
         expect_that!(members(&ctx, group), { eq(&key) });
@@ -330,7 +329,7 @@ mod tests {
     fn adding_twice_is_rejected() {
         let mut ctx = Context::new();
         let group = ctx.create_group();
-        let key = ctx.create_root();
+        let key = ctx.create_node().id();
         ctx.add_to_group(group, key).unwrap();
 
         expect_that!(ctx.add_to_group(group, key), ok(eq(false)));
@@ -341,7 +340,7 @@ mod tests {
     #[gtest]
     fn add_rejects_unknown_groups() {
         let mut ctx = Context::new();
-        let key = ctx.create_root();
+        let key = ctx.create_node().id();
         let removed = ctx.create_group();
         ctx.remove_group(removed).unwrap();
         expect_that!(
@@ -356,7 +355,7 @@ mod tests {
     fn add_rejects_removed_nodes() {
         let mut ctx = Context::new();
         let group = ctx.create_group();
-        let key = ctx.create_root();
+        let key = ctx.create_node().id();
         ctx.remove_node(key).unwrap();
         expect_that!(
             ctx.add_to_group(group, key),
@@ -370,7 +369,7 @@ mod tests {
     fn removing_a_non_member_changes_nothing() {
         let mut ctx = Context::new();
         let group = ctx.create_group();
-        let key = ctx.create_root();
+        let key = ctx.create_node().id();
         expect_that!(ctx.remove_from_group(group, key), ok(eq(false)));
 
         ctx.add_to_group(group, key).unwrap();
@@ -382,7 +381,7 @@ mod tests {
     fn remove_from_group_rejects_unknown_ids() {
         let mut ctx = Context::new();
         let group = ctx.create_group();
-        let key = ctx.create_root();
+        let key = ctx.create_node().id();
         let removed_group = ctx.create_group();
         ctx.remove_group(removed_group).unwrap();
         expect_that!(
@@ -404,7 +403,7 @@ mod tests {
     fn nodes_can_rejoin_a_group() {
         let mut ctx = Context::new();
         let group = ctx.create_group();
-        let key = ctx.create_root();
+        let key = ctx.create_node().id();
         ctx.add_to_group(group, key).unwrap();
         ctx.remove_from_group(group, key).unwrap();
 
@@ -417,7 +416,7 @@ mod tests {
     fn removing_an_unknown_group_changes_nothing() {
         let mut ctx = Context::new();
         let group = ctx.create_group();
-        let key = ctx.create_root();
+        let key = ctx.create_node().id();
         ctx.add_to_group(group, key).unwrap();
         let removed = ctx.create_group();
         ctx.remove_group(removed).unwrap();
@@ -431,11 +430,11 @@ mod tests {
     fn reused_slots_start_without_groups() {
         let mut ctx = Context::new();
         let group = ctx.create_group();
-        let old = ctx.create_root();
+        let old = ctx.create_node().id();
         ctx.add_to_group(group, old).unwrap();
         ctx.remove_node(old).unwrap();
 
-        let new = ctx.create_root();
+        let new = ctx.create_node().id();
         expect_that!(groups_of(&ctx, new), is_empty());
         expect_that!(members(&ctx, group), is_empty());
     }
@@ -445,7 +444,7 @@ mod tests {
         let mut ctx = Context::new();
         let kept = ctx.create_group();
         let left = ctx.create_group();
-        let key = ctx.create_root();
+        let key = ctx.create_node().id();
         ctx.add_to_group(kept, key).unwrap();
         ctx.add_to_group(left, key).unwrap();
 
@@ -463,7 +462,7 @@ mod tests {
     fn remove_membership_panics_when_directions_diverge() {
         let mut ctx = Context::new();
         let group = ctx.create_group();
-        let key = ctx.create_root();
+        let key = ctx.create_node().id();
         ctx.add_to_group(group, key).unwrap();
         ctx.get_mut::<Groups>().unwrap().memberships.remove(key);
 
@@ -475,8 +474,8 @@ mod tests {
         let mut ctx = Context::new();
         let removed = ctx.create_group();
         let kept = ctx.create_group();
-        let first = ctx.create_root();
-        let second = ctx.create_root();
+        let first = ctx.create_node().id();
+        let second = ctx.create_node().id();
         ctx.add_to_group(removed, first).unwrap();
         ctx.add_to_group(removed, second).unwrap();
         ctx.add_to_group(kept, second).unwrap();

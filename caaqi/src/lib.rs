@@ -10,7 +10,10 @@ pub mod tracking;
 
 pub mod prelude {
     pub use crate::{
-        action::{Action, ActionExt, ActionStorage, BoxAction, NoStoredAction, RunActionError},
+        action::{
+            Action, ActionExt, ActionStorage, BoxAction, ClearChildrenError, ExecutingDescendant,
+            NoStoredAction, NodeExecuting, RemoveNodeError, RunActionError,
+        },
         context::Context,
         current::{CurrentActionExt, NotExecuting},
         grouping::{
@@ -19,8 +22,9 @@ pub mod prelude {
         },
         lifecycle::{LifecycleExt, NodeObserver},
         trace::{
-            ClearChildrenError, ExecutingDescendant, NodeExecuting, RemoveNodeError, Trace,
-            TraceExt, TraceKey, UnknownNode,
+            AddChildError, AlreadyParented, HasChildren, SelfParent, SetParentError, Trace,
+            TraceExt, TraceKey, TraceNodeMut, TraceNodeRef, UnknownChild, UnknownNode,
+            UnknownParent, WouldCycle,
         },
         trace_iter::{TopDownCursor, TopDownWalk, TraceIterExt},
         tracking::{
