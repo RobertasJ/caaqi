@@ -1,10 +1,7 @@
 use slotmap::{SlotMap, new_key_type};
 use smallvec::SmallVec;
 
-use crate::{
-    context::Context,
-    lifecycle::{notify_node_added, notify_nodes_removed},
-};
+use crate::context::Context;
 
 new_key_type! {
     /// Only valid in the `Context` that created it. Using a key with another
@@ -27,11 +24,11 @@ pub struct UnknownParent(#[source] pub UnknownNode);
 pub struct UnknownChild(#[source] pub UnknownNode);
 
 /// The child already has a parent. Reparenting is explicit: call
-/// [`remove_parent`](TraceNodeMut::remove_parent) first.
+/// [`detach`](TraceNodeMut::detach) first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error(
     "trace node {child:?} already has parent {current_parent:?}; \
-     call `remove_parent` before attaching it to {requested_parent:?}"
+     call `detach` before attaching it to {requested_parent:?}"
 )]
 pub struct AlreadyParented {
     pub child: TraceKey,
@@ -360,11 +357,10 @@ impl<'a> TraceNodeRef<'a> {
 /// and [`TraceExt::create_node`].
 ///
 /// Reparenting is explicit: a node that has a parent must be detached with
-/// [`remove_parent`](Self::remove_parent) before it's attached elsewhere. A
+/// [`detach`](Self::detach) before it's attached elsewhere. A
 /// node's whole subtree moves with it.
 pub struct TraceNodeMut<'a> {
-    // TODO: hold only `&'a mut Trace` once rewinding is implemented and the
-    // lifecycle notifications are removed.
+    // TODO: hold only `&'a mut Trace`.
     ctx: &'a mut Context,
     key: TraceKey,
 }
@@ -451,11 +447,7 @@ impl TraceNodeMut<'_> {
     /// first if it has one.
     pub fn delete(self) -> Result<(), HasChildren> {
         let Self { ctx, key } = self;
-        trace_mut(ctx).remove_leaf(key)?;
-        // TODO: remove once rewinding is implemented; the trace should only
-        // modify the tree.
-        notify_nodes_removed(ctx, &[key]);
-        Ok(())
+        trace_mut(ctx).remove_leaf(key)
     }
 
     /// Deletes this node and its descendants, bottom up, one
@@ -520,9 +512,6 @@ impl TraceExt for Context {
 
     fn create_node(&mut self) -> TraceNodeMut<'_> {
         let key = trace_mut(self).insert_root();
-        // TODO: remove once rewinding is implemented; the trace should only
-        // modify the tree.
-        notify_node_added(self, key);
         TraceNodeMut { ctx: self, key }
     }
 }
@@ -748,7 +737,7 @@ mod tests {
     }
 
     #[gtest]
-    fn remove_parent_reports_whether_there_was_one() {
+    fn detach_reports_whether_there_was_a_parent() {
         let (mut ctx, root, [a, _, _, b, _]) = tree();
         let mut node = ctx.node_mut(a).unwrap();
 

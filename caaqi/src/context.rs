@@ -3,17 +3,15 @@ use std::{
     collections::HashMap,
 };
 
-use crate::action::Action;
-
 /// A type-map of resources: one value per type, global to the context.
 ///
-/// Everything lives here, including caaqi's own modules (see
+/// Everything lives here, including caaqi's own state (see
 /// [`Trace`](crate::trace::Trace)). Modules expose their API as
 /// extension traits implemented for `Context`.
 ///
-/// Values survive reruns and descendant removal, and are dropped only by
-/// `remove`. Returned references borrow the context, so they can't be held
-/// across a nested run; drop the borrow first, or `remove` + `insert` around it.
+/// Values are dropped only by `remove`. Returned references borrow the whole
+/// context, so they can't be held across another call that needs it; drop the
+/// borrow first, or `remove` + `insert` around it.
 #[derive(Default)]
 pub struct Context {
     data: HashMap<TypeId, Box<dyn Any>>,
@@ -22,12 +20,6 @@ pub struct Context {
 impl Context {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Runs `action` without storing it. The current action is unchanged, so
-    /// anything it stores attaches to the executing stored action.
-    pub fn run<A: Action>(&mut self, mut action: A) -> A::Output {
-        action.run(self)
     }
 
     /// Stores `value`, returning the previous value of the same type.

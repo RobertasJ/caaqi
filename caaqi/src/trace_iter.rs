@@ -41,8 +41,8 @@ impl Iterator for TopDownWalk<'_> {
 /// [`next`](Self::next) takes it instead, so the context can be changed
 /// between calls.
 ///
-/// A node's children are read on the `next` call after it's returned, so a
-/// node rerun in between has its new children walked, unless
+/// A node's children are read on the `next` call after it's returned, so
+/// children it gains or loses in between are taken into account, unless
 /// [`skip_children`](Self::skip_children) is called. Nodes removed in between
 /// are skipped.
 pub struct TopDownCursor {
@@ -204,7 +204,12 @@ mod tests {
     use googletest::prelude::*;
 
     use super::*;
-    use crate::{action::ActionExt, current::CurrentActionExt};
+
+    fn child(ctx: &mut Context, parent: TraceKey) -> TraceKey {
+        let mut node = ctx.create_node();
+        node.set_parent(parent).unwrap();
+        node.id()
+    }
 
     /// ```text
     /// root
@@ -217,20 +222,12 @@ mod tests {
     fn tree() -> (Context, TraceKey, [TraceKey; 5]) {
         let mut ctx = Context::new();
         let root = ctx.create_node().id();
-        let nodes = ctx
-            .with_current_action(root, |ctx| {
-                let a = ctx.create_branch();
-                let (a1, a2) = ctx
-                    .with_current_action(a, |ctx| (ctx.create_branch(), ctx.create_branch()))
-                    .unwrap();
-                let b = ctx.create_branch();
-                let b1 = ctx
-                    .with_current_action(b, |ctx| ctx.create_branch())
-                    .unwrap();
-                [a, a1, a2, b, b1]
-            })
-            .unwrap();
-        (ctx, root, nodes)
+        let a = child(&mut ctx, root);
+        let a1 = child(&mut ctx, a);
+        let a2 = child(&mut ctx, a);
+        let b = child(&mut ctx, root);
+        let b1 = child(&mut ctx, b);
+        (ctx, root, [a, a1, a2, b, b1])
     }
 
     /// A context with a root that has children `a` and `b`, and `a` has a
@@ -238,15 +235,9 @@ mod tests {
     fn ctx_tree() -> (Context, [TraceKey; 4]) {
         let mut ctx = Context::new();
         let root = ctx.create_node().id();
-        let (a, a_child, b) = ctx
-            .with_current_action(root, |ctx| {
-                let a = ctx.create_branch();
-                let a_child = ctx
-                    .with_current_action(a, |ctx| ctx.create_branch())
-                    .unwrap();
-                (a, a_child, ctx.create_branch())
-            })
-            .unwrap();
+        let a = child(&mut ctx, root);
+        let a_child = child(&mut ctx, a);
+        let b = child(&mut ctx, root);
         (ctx, [root, a, a_child, b])
     }
 
@@ -310,13 +301,13 @@ mod tests {
 
     #[gtest]
     fn cursor_walks_while_the_tree_changes() {
-        let (mut ctx, [root, a, _, b]) = ctx_tree();
+        let (mut ctx, [root, a, a_child, b]) = ctx_tree();
         let mut cursor = ctx.subtree_top_down(root).unwrap().into_cursor();
         let mut order = Vec::new();
         while let Some(key) = cursor.next(&ctx) {
             order.push(key);
             if key == a {
-                ctx.clear_children(a).unwrap();
+                ctx.node_mut(a_child).unwrap().delete_branch();
             }
         }
         expect_eq!(order, [root, a, b]);
@@ -330,7 +321,7 @@ mod tests {
         while let Some(key) = cursor.next(&ctx) {
             order.push(key);
             if key == a {
-                ctx.remove_node(b).unwrap();
+                ctx.node_mut(b).unwrap().delete_branch();
             }
         }
         expect_eq!(order, [root, a, a_child]);
@@ -366,7 +357,7 @@ mod tests {
     #[gtest]
     fn walks_reject_unknown_nodes() {
         let (mut ctx, _, [a, a1, ..]) = tree();
-        ctx.remove_node(a).unwrap();
+        ctx.node_mut(a).unwrap().delete_branch();
 
         expect_true!(ctx.ancestors(a1).is_err());
         expect_true!(ctx.subtree_top_down(a).is_err());
