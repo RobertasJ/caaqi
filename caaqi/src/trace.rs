@@ -1,3 +1,24 @@
+//! The trace: the tree of nodes that computation runs in, and each node's
+//! runner.
+//!
+//! The trace is a forest. Each node has at most one parent, any number of
+//! children, and a [`Runner`], the code that runs it. Nodes are also linked
+//! in trace order, parents before their children (see [`Trace`]).
+//!
+//! [`TraceExt`] creates nodes and hands out handles to them, like bevy's
+//! `EntityRef` / `EntityWorldMut`: [`NodeRef`] for reads and [`NodeMut`] for
+//! reads and writes. Every write has its own error type, which says exactly
+//! why it was refused.
+//!
+//! The trace knows only structure and runners. Nodes are created and deleted
+//! without notifying anyone, and everything else about a node, rewinds
+//! included, lives in other resources keyed by [`NodeKey`]. Other modules add
+//! per-node methods through extension traits on the handles, reaching their
+//! resources through [`NodeRef::context`], [`NodeMut::context`] and
+//! [`NodeMut::context_mut`].
+//!
+//! Multi-step walks over the trace are in [`trace_iter`](crate::trace_iter).
+
 use std::panic::{self, AssertUnwindSafe};
 
 use slotmap::{SlotMap, new_key_type};
@@ -9,10 +30,6 @@ new_key_type! {
     /// Only valid in the `Context` that created it. Using a key with another
     /// context is unsupported and may refer to an unrelated node.
     pub struct NodeKey;
-
-    /// A rewind registered with [`NodeMut::register_rewind`]. Like
-    /// [`NodeKey`], only valid in the `Context` that created it.
-    pub struct RewindKey;
 }
 
 /// The code that runs a node, given to [`TraceExt::create_node`] and called
@@ -83,25 +100,10 @@ pub struct HasChildren {
     pub children: usize,
 }
 
-/// [`NodeMut::delete`] refuses nodes whose rewinds haven't run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("node {0:?} has rewinds registered; call `rewind` before deleting it")]
-pub struct HasRewinds(pub NodeKey);
-
-/// [`NodeMut::run`] refuses nodes whose rewinds haven't run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("node {0:?} has rewinds registered; call `rewind` before running it")]
-pub struct NotRewound(pub NodeKey);
-
 /// The node's runner is taken out because the node is running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("node {0:?} is running")]
 pub struct RunnerInUse(pub NodeKey);
-
-/// [`NodeMut::register_rewind`] is refused while any rewind is running.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("can't register a rewind while a rewind is running")]
-pub struct InsideRewind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SetParentError {
@@ -128,26 +130,16 @@ pub enum AddChildError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum RunError {
-    #[error(transparent)]
-    RunnerInUse(#[from] RunnerInUse),
-    #[error(transparent)]
-    NotRewound(#[from] NotRewound),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum DeleteError {
     #[error(transparent)]
     RunnerInUse(#[from] RunnerInUse),
-    #[error(transparent)]
-    HasRewinds(#[from] HasRewinds),
     #[error(transparent)]
     HasChildren(#[from] HasChildren),
 }
 
 /// The trace resource. It holds the shape of the trace and each node's
-/// runner and rewinds; other per-node data lives in other resources keyed by
-/// [`NodeKey`].
+/// runner; other per-node data, rewinds included, lives in other resources
+/// keyed by [`NodeKey`].
 ///
 /// Everything public goes through [`TraceExt`] and the node handles it
 /// returns, [`NodeRef`] and [`NodeMut`].
@@ -160,30 +152,14 @@ pub enum DeleteError {
 /// `prev`, the last node of its tree has no `next`, and the orders of two
 /// roots never link.
 ///
-/// # Running and rewinding
+/// # Running
 ///
-/// Every node has a [`Runner`], the code that runs it. Anything a run needs
-/// undone is registered as a rewind on a node with
-/// [`register_rewind`](NodeMut::register_rewind).
-/// [`rewind`](NodeMut::rewind) runs a node's rewinds, one at a time, in
-/// unspecified order, until it has none left. A rewind may run other rewinds
-/// by key with [`run_rewind`](TraceExt::run_rewind), or rewind other nodes:
-/// that's how nesting and ordering are expressed.
-///
-/// - Code must not depend on the order `rewind` picks rewinds in. Debug
-///   builds pick at random.
-/// - [`run`](NodeMut::run) refuses a node that still has rewinds.
-/// - A running node can't be deleted, and neither can one with rewinds.
-/// - No rewind can be registered while a rewind is running.
+/// Every node has a [`Runner`], the code that runs it, called by
+/// [`run`](NodeMut::run). A running node can't be run again or deleted.
+/// Undoing what a run did is left to layers built on top of the trace.
 #[derive(Default)]
 pub struct Trace {
     nodes: SlotMap<NodeKey, Node>,
-    rewinds: SlotMap<RewindKey, RewindEntry>,
-    /// The number of rewinds running, nested ones included.
-    rewind_depth: usize,
-    /// Picks the rewind [`NodeMut::rewind`] runs next.
-    #[cfg(debug_assertions)]
-    shuffle: Shuffle,
 }
 
 struct Node {
@@ -193,43 +169,6 @@ struct Node {
     next: Option<NodeKey>,
     /// `None` only while the runner is taken out to run.
     runner: Option<Box<dyn Runner>>,
-    /// The keys of the node's registered rewinds, in `Trace::rewinds`.
-    rewinds: SmallVec<[RewindKey; 2]>,
-}
-
-type Rewind = Box<dyn FnOnce(&mut Context)>;
-
-struct RewindEntry {
-    node: NodeKey,
-    rewind: Rewind,
-}
-
-/// A xorshift generator, seeded differently for every [`Trace`], so that code
-/// depending on the order [`NodeMut::rewind`] picks rewinds in fails in
-/// debug builds.
-#[cfg(debug_assertions)]
-struct Shuffle(u64);
-
-#[cfg(debug_assertions)]
-impl Default for Shuffle {
-    fn default() -> Self {
-        use std::{collections::hash_map::RandomState, hash::BuildHasher};
-        // xorshift never leaves 0, so the seed must not be 0.
-        Self(RandomState::new().hash_one(0) | 1)
-    }
-}
-
-#[cfg(debug_assertions)]
-impl Shuffle {
-    /// A number in `0..len`. `len` must not be 0.
-    fn below(&mut self, len: usize) -> usize {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        (x % len as u64) as usize
-    }
 }
 
 impl Trace {
@@ -305,23 +244,17 @@ impl Trace {
             prev: None,
             next: None,
             runner: Some(runner),
-            rewinds: SmallVec::new(),
         })
     }
 
     /// Takes `key`'s runner out to run it. `key` must be in the trace.
-    fn take_runner(&mut self, key: NodeKey) -> Result<Box<dyn Runner>, RunError> {
-        let node = self
-            .nodes
+    fn take_runner(&mut self, key: NodeKey) -> Result<Box<dyn Runner>, RunnerInUse> {
+        self.nodes
             .get_mut(key)
-            .expect("the handle's node is in the trace");
-        if node.runner.is_none() {
-            return Err(RunnerInUse(key).into());
-        }
-        if !node.rewinds.is_empty() {
-            return Err(NotRewound(key).into());
-        }
-        Ok(node.runner.take().expect("checked above"))
+            .expect("the handle's node is in the trace")
+            .runner
+            .take()
+            .ok_or(RunnerInUse(key))
     }
 
     /// Puts back the runner [`take_runner`](Self::take_runner) took out.
@@ -330,55 +263,6 @@ impl Trace {
             .get_mut(key)
             .expect("a running node can't be deleted")
             .runner = Some(runner);
-    }
-
-    /// Registers `rewind` on `key`, which must be in the trace.
-    fn add_rewind(&mut self, key: NodeKey, rewind: Rewind) -> Result<RewindKey, InsideRewind> {
-        if self.rewind_depth > 0 {
-            return Err(InsideRewind);
-        }
-
-        let node = self
-            .nodes
-            .get_mut(key)
-            .expect("the handle's node is in the trace");
-        let rewind = self.rewinds.insert(RewindEntry { node: key, rewind });
-        node.rewinds.push(rewind);
-        Ok(rewind)
-    }
-
-    /// Takes the rewind `key` out, or returns `None` if it's gone.
-    fn take_rewind(&mut self, key: RewindKey) -> Option<Rewind> {
-        let entry = self.rewinds.remove(key)?;
-        self.nodes
-            .get_mut(entry.node)
-            .expect("a node with rewinds can't be deleted")
-            .rewinds
-            .retain(|&mut rewind| rewind != key);
-        Some(entry.rewind)
-    }
-
-    /// Takes one of `key`'s rewinds out, or returns `None` when it has none
-    /// left or isn't in the trace anymore. Which one is unspecified: a random
-    /// one in debug builds, the last one otherwise.
-    fn take_any_rewind(&mut self, key: NodeKey) -> Option<Rewind> {
-        let rewinds = &mut self.nodes.get_mut(key)?.rewinds;
-        if rewinds.is_empty() {
-            return None;
-        }
-
-        #[cfg(debug_assertions)]
-        let index = self.shuffle.below(rewinds.len());
-        #[cfg(not(debug_assertions))]
-        let index = rewinds.len() - 1;
-
-        let rewind = rewinds.swap_remove(index);
-        Some(
-            self.rewinds
-                .remove(rewind)
-                .expect("a node's rewinds are stored")
-                .rewind,
-        )
     }
 
     /// Makes `child` the last child of `parent`, moving `child`'s subtree
@@ -473,20 +357,16 @@ impl Trace {
         true
     }
 
-    /// Removes `key` from the trace. It must be a leaf that isn't running and
-    /// has no rewinds.
+    /// Removes `key` from the trace. It must be a leaf that isn't running.
     fn remove_leaf(&mut self, key: NodeKey) -> Result<(), DeleteError> {
         let node = self
             .nodes
             .get(key)
             .expect("the handle's node is in the trace");
 
-        // running and rewinds checks
+        // running check
         if node.runner.is_none() {
             return Err(RunnerInUse(key).into());
-        }
-        if !node.rewinds.is_empty() {
-            return Err(HasRewinds(key).into());
         }
 
         // children check
@@ -510,26 +390,6 @@ impl Trace {
 
 fn trace_mut(ctx: &mut Context) -> &mut Trace {
     ctx.get_or_insert_with(Trace::default)
-}
-
-/// Runs `rewind`, already taken out of the trace, counted in
-/// `Trace::rewind_depth` until it returns or panics.
-fn run_taken_rewind(ctx: &mut Context, rewind: Rewind) {
-    /// Uncounts the rewind when dropped, so a panicking one is uncounted too.
-    struct Depth<'a>(&'a mut Context);
-
-    impl Drop for Depth<'_> {
-        fn drop(&mut self) {
-            self.0
-                .get_mut::<Trace>()
-                .expect("a rewind can't remove the trace")
-                .rewind_depth -= 1;
-        }
-    }
-
-    trace_mut(ctx).rewind_depth += 1;
-    let depth = Depth(ctx);
-    rewind(&mut *depth.0);
 }
 
 /// Read access to a node in the trace, returned by [`TraceExt::node`].
@@ -586,11 +446,6 @@ impl<'a> NodeRef<'a> {
     /// out.
     pub fn is_running(&self) -> bool {
         self.data().runner.is_none()
-    }
-
-    /// Whether this node has rewinds registered that haven't run yet.
-    pub fn has_rewinds(&self) -> bool {
-        !self.data().rewinds.is_empty()
     }
 }
 
@@ -669,17 +524,11 @@ impl NodeMut<'_> {
         self.as_ref().is_running()
     }
 
-    /// Whether this node has rewinds registered that haven't run yet.
-    pub fn has_rewinds(&self) -> bool {
-        self.as_ref().has_rewinds()
-    }
-
     /// Calls this node's runner with this node's key.
     ///
-    /// Fails if the node is already running, or if it still has rewinds
-    /// registered: [`rewind`](Self::rewind) it first. If the runner panics,
-    /// it's put back before the panic is passed on.
-    pub fn run(&mut self) -> Result<(), RunError> {
+    /// Fails if the node is already running. If the runner panics, it's put
+    /// back before the panic is passed on.
+    pub fn run(&mut self) -> Result<(), RunnerInUse> {
         let key = self.key;
         let mut runner = self.trace_mut().take_runner(key)?;
         let result = panic::catch_unwind(AssertUnwindSafe(|| runner.run(self.ctx, key)));
@@ -688,40 +537,6 @@ impl NodeMut<'_> {
             panic::resume_unwind(payload);
         }
         Ok(())
-    }
-
-    /// Registers `f` as a rewind of this node, to be run by
-    /// [`rewind`](Self::rewind) or [`run_rewind`](TraceExt::run_rewind).
-    /// Any node can have rewinds registered, running or not.
-    ///
-    /// Fails while any rewind is running.
-    pub fn register_rewind(
-        &mut self,
-        f: impl FnOnce(&mut Context) + 'static,
-    ) -> Result<RewindKey, InsideRewind> {
-        let key = self.key;
-        self.trace_mut().add_rewind(key, Box::new(f))
-    }
-
-    /// Runs this node's rewinds, one at a time, until it has none left.
-    ///
-    /// Which of the remaining rewinds runs next is unspecified, and code must
-    /// not depend on it: debug builds pick one at random. To run a rewind
-    /// before another, have the other one call
-    /// [`run_rewind`](TraceExt::run_rewind) on it.
-    ///
-    /// Each rewind is taken out just before it runs, and the rest stay
-    /// registered, so it can run them by key or rewind other nodes. A rewind
-    /// that's taken out is gone even if it panics; the rest stay registered,
-    /// and calling `rewind` again continues. A rewind may delete this node
-    /// once it has no rewinds left; `rewind` then returns, and the handle's
-    /// other methods may panic.
-    pub fn rewind(&mut self) {
-        let key = self.key;
-        // The node is read again every time, in case a rewind deleted it.
-        while let Some(rewind) = self.trace_mut().take_any_rewind(key) {
-            run_taken_rewind(self.ctx, rewind);
-        }
     }
 
     /// Makes this node the last child of `parent`.
@@ -760,8 +575,11 @@ impl NodeMut<'_> {
         self.trace_mut().detach(key)
     }
 
-    /// Deletes this node, which must be a leaf that isn't running and has no
-    /// rewinds. Detaches it from its parent first if it has one.
+    /// Deletes this node, which must be a leaf that isn't running. Detaches
+    /// it from its parent first if it has one.
+    ///
+    /// Nobody is notified: per-node data in other resources, rewinds
+    /// included, is left behind.
     pub fn delete(self) -> Result<(), DeleteError> {
         let Self { ctx, key } = self;
         trace_mut(ctx).remove_leaf(key)
@@ -783,15 +601,6 @@ pub trait TraceExt {
     /// [`set_parent`](NodeMut::set_parent) or
     /// [`add_child`](NodeMut::add_child), alone in its own trace order.
     fn create_node(&mut self, runner: impl Runner) -> NodeMut<'_>;
-
-    /// Runs the rewind `key` now, taking it off its node, and returns
-    /// `true`. Returns `false` if it's gone because it already ran.
-    ///
-    /// A key that never existed looks the same as one that already ran.
-    /// That's fine: rewind keys only come from
-    /// [`register_rewind`](NodeMut::register_rewind), and keys from other
-    /// contexts are unsupported.
-    fn run_rewind(&mut self, key: RewindKey) -> bool;
 }
 
 impl TraceExt for Context {
@@ -817,17 +626,6 @@ impl TraceExt for Context {
         let key = trace_mut(self).insert_root(Box::new(runner));
         NodeMut { ctx: self, key }
     }
-
-    fn run_rewind(&mut self, key: RewindKey) -> bool {
-        let Some(rewind) = self
-            .get_mut::<Trace>()
-            .and_then(|trace| trace.take_rewind(key))
-        else {
-            return false;
-        };
-        run_taken_rewind(self, rewind);
-        true
-    }
 }
 
 #[cfg(test)]
@@ -839,7 +637,7 @@ mod tests {
     /// A runner for nodes whose runs don't matter.
     fn noop(_: &mut Context, _: NodeKey) {}
 
-    /// What runners and rewinds did, in the order they did it.
+    /// What runners did, in the order they did it.
     #[derive(Default)]
     struct Log(Vec<String>);
 
@@ -1124,143 +922,6 @@ mod tests {
     }
 
     #[gtest]
-    fn rewind_runs_every_rewind_once() {
-        let mut ctx = Context::new();
-        let mut node = ctx.create_node(noop);
-        let keys: Vec<_> = (0..5)
-            .map(|i| node.register_rewind(move |ctx| log(ctx, i)).unwrap())
-            .collect();
-        expect_true!(node.has_rewinds());
-
-        node.rewind();
-        expect_false!(node.has_rewinds());
-        node.rewind();
-        let mut ran = logged(&ctx);
-        ran.sort();
-        expect_eq!(ran, ["0", "1", "2", "3", "4"]);
-        for key in keys {
-            expect_false!(ctx.run_rewind(key));
-        }
-        expect_true!(ctx.get::<Trace>().unwrap().rewinds.is_empty());
-    }
-
-    #[cfg(debug_assertions)]
-    #[gtest]
-    fn rewind_order_varies_in_debug_builds() {
-        let orders: std::collections::HashSet<_> = (0..8)
-            .map(|_| {
-                let mut ctx = Context::new();
-                let mut node = ctx.create_node(noop);
-                for i in 0..8 {
-                    node.register_rewind(move |ctx| log(ctx, i)).unwrap();
-                }
-                node.rewind();
-                logged(&ctx)
-            })
-            .collect();
-        expect_that!(orders.len(), gt(1));
-    }
-
-    #[gtest]
-    fn run_rewind_runs_its_target_now_and_only_once() {
-        // Which rewind `rewind` picks first varies, so try it a few times.
-        for _ in 0..8 {
-            let mut ctx = Context::new();
-            let mut node = ctx.create_node(noop);
-            let inner = node.register_rewind(|ctx| log(ctx, "inner")).unwrap();
-            node.register_rewind(move |ctx| {
-                let inner_ran = !logged(ctx).is_empty();
-                expect_eq!(ctx.run_rewind(inner), !inner_ran);
-                expect_eq!(logged(ctx), ["inner"]);
-                expect_false!(ctx.run_rewind(inner));
-                log(ctx, "outer");
-            })
-            .unwrap();
-
-            node.rewind();
-            expect_eq!(logged(&ctx), ["inner", "outer"]);
-        }
-    }
-
-    #[gtest]
-    fn a_rewind_can_rewind_another_node() {
-        let mut ctx = Context::new();
-        let other = ctx.create_node(noop).id();
-        for i in 0..3 {
-            ctx.node_mut(other)
-                .unwrap()
-                .register_rewind(move |ctx| log(ctx, i))
-                .unwrap();
-        }
-        let mut node = ctx.create_node(noop);
-        node.register_rewind(move |ctx| {
-            ctx.node_mut(other).unwrap().rewind();
-            log(ctx, "outer");
-        })
-        .unwrap();
-
-        node.rewind();
-        expect_false!(ctx.node(other).unwrap().has_rewinds());
-        let log = logged(&ctx);
-        let (outer, inner) = log.split_last().unwrap();
-        let mut inner = inner.to_vec();
-        inner.sort();
-        expect_eq!(inner, ["0", "1", "2"]);
-        expect_eq!(outer, "outer");
-    }
-
-    #[gtest]
-    fn registering_inside_a_rewind_is_refused() {
-        let mut ctx = Context::new();
-        let outer = ctx.create_node(noop).id();
-        let inner = ctx.create_node(noop).id();
-        ctx.node_mut(inner)
-            .unwrap()
-            .register_rewind(move |ctx| {
-                expect_that!(
-                    ctx.node_mut(outer).unwrap().register_rewind(|_| {}).err(),
-                    some(eq(InsideRewind))
-                );
-                log(ctx, "inner");
-            })
-            .unwrap();
-        ctx.node_mut(outer)
-            .unwrap()
-            .register_rewind(move |ctx| {
-                ctx.node_mut(inner).unwrap().rewind();
-                // The nested rewind is over, but this one is still running.
-                expect_that!(
-                    ctx.node_mut(inner).unwrap().register_rewind(|_| {}).err(),
-                    some(eq(InsideRewind))
-                );
-                log(ctx, "outer");
-            })
-            .unwrap();
-
-        ctx.node_mut(outer).unwrap().rewind();
-        expect_eq!(logged(&ctx), ["inner", "outer"]);
-        expect_false!(ctx.node(inner).unwrap().has_rewinds());
-        expect_false!(ctx.node(outer).unwrap().has_rewinds());
-        expect_true!(ctx.node_mut(outer).unwrap().register_rewind(|_| {}).is_ok());
-    }
-
-    #[gtest]
-    fn run_needs_the_node_rewound() {
-        let mut ctx = Context::new();
-        let mut node = ctx.create_node(|ctx: &mut Context, _: NodeKey| log(ctx, "ran"));
-        let key = node.id();
-        node.register_rewind(|ctx| log(ctx, "rewound")).unwrap();
-
-        expect_that!(
-            node.run().err(),
-            some(eq(RunError::NotRewound(NotRewound(key))))
-        );
-        node.rewind();
-        expect_eq!(node.run(), Ok(()));
-        expect_eq!(logged(&ctx), ["rewound", "ran"]);
-    }
-
-    #[gtest]
     fn a_runner_gets_its_node_and_cant_run_it_again() {
         struct RanAs(NodeKey);
 
@@ -1270,7 +931,7 @@ mod tests {
                 expect_true!(ctx.node(key).unwrap().is_running());
                 expect_that!(
                     ctx.node_mut(key).unwrap().run().err(),
-                    some(eq(RunError::RunnerInUse(RunnerInUse(key))))
+                    some(eq(RunnerInUse(key)))
                 );
                 ctx.insert(RanAs(key));
             })
@@ -1283,7 +944,7 @@ mod tests {
     }
 
     #[gtest]
-    fn delete_refuses_running_nodes_and_nodes_with_rewinds() {
+    fn delete_refuses_running_nodes() {
         let mut ctx = Context::new();
         let running = ctx
             .create_node(|ctx: &mut Context, key: NodeKey| {
@@ -1295,16 +956,7 @@ mod tests {
             .id();
         ctx.node_mut(running).unwrap().run().unwrap();
         expect_true!(ctx.contains_node(running));
-
-        let mut node = ctx.create_node(noop);
-        let rewound = node.id();
-        node.register_rewind(|_| {}).unwrap();
-        expect_that!(
-            node.delete().err(),
-            some(eq(DeleteError::HasRewinds(HasRewinds(rewound))))
-        );
-        ctx.node_mut(rewound).unwrap().rewind();
-        expect_eq!(ctx.node_mut(rewound).unwrap().delete(), Ok(()));
+        expect_eq!(ctx.node_mut(running).unwrap().delete(), Ok(()));
     }
 
     #[gtest]
@@ -1324,48 +976,5 @@ mod tests {
         expect_false!(ctx.node(key).unwrap().is_running());
         expect_eq!(ctx.node_mut(key).unwrap().run(), Ok(()));
         expect_eq!(logged(&ctx), ["ran", "ran"]);
-    }
-
-    #[gtest]
-    fn a_panicking_rewind_leaves_the_rest_registered() {
-        let mut ctx = Context::new();
-        let mut node = ctx.create_node(noop);
-        let key = node.id();
-        node.register_rewind(|_| panic!("the rewind panics"))
-            .unwrap();
-        for i in 0..4 {
-            node.register_rewind(move |ctx| log(ctx, i)).unwrap();
-        }
-
-        let result = panic::catch_unwind(AssertUnwindSafe(|| ctx.node_mut(key).unwrap().rewind()));
-        expect_true!(result.is_err());
-        expect_eq!(ctx.get::<Trace>().unwrap().rewind_depth, 0);
-        // The ones that didn't run before the panic are still registered.
-        expect_eq!(ctx.node(key).unwrap().has_rewinds(), logged(&ctx).len() < 4);
-
-        ctx.node_mut(key).unwrap().rewind();
-        expect_false!(ctx.node(key).unwrap().has_rewinds());
-        let mut ran = logged(&ctx);
-        ran.sort();
-        expect_eq!(ran, ["0", "1", "2", "3"]);
-    }
-
-    #[gtest]
-    fn a_rewind_can_delete_its_own_node() {
-        let mut ctx = Context::new();
-        let key = ctx.create_node(noop).id();
-        let mut node = ctx.node_mut(key).unwrap();
-        let first = node.register_rewind(|ctx| log(ctx, "first")).unwrap();
-        node.register_rewind(move |ctx| {
-            // Deleting needs the node's other rewinds to have run.
-            ctx.run_rewind(first);
-            ctx.node_mut(key).unwrap().delete().unwrap();
-            log(ctx, "deleted");
-        })
-        .unwrap();
-
-        node.rewind();
-        expect_false!(ctx.contains_node(key));
-        expect_eq!(logged(&ctx), ["first", "deleted"]);
     }
 }

@@ -1,4 +1,15 @@
 //! Walks over the trace, written only against the public [`TraceExt`] API.
+//!
+//! [`TraceIterExt`] has the multi-step walks: up to the root
+//! ([`ancestors`](TraceIterExt::ancestors)), and down through a subtree,
+//! parents first ([`subtree_top_down`](TraceIterExt::subtree_top_down)) or
+//! children first ([`subtree_bottom_up`](TraceIterExt::subtree_bottom_up)),
+//! with `_rev` variants that take siblings last to first. Single steps are on
+//! the node handles.
+//!
+//! Walks borrow the context. To change the trace during a top-down walk,
+//! turn it into a [`TopDownCursor`], which takes the context on each step
+//! instead.
 
 use crate::{
     context::Context,

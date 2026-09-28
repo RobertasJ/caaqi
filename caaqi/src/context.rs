@@ -1,3 +1,20 @@
+//! [`Context`], the type-map that holds all state, and the pattern every
+//! layer is built with.
+//!
+//! A layer defines a resource type, stored in the context and fetched lazily
+//! with [`get_or_insert_with`](Context::get_or_insert_with), and an
+//! extension trait implemented for `Context` that holds every public
+//! operation on it, reads included. The resource's own methods stay private.
+//! [`Trace`](crate::trace::Trace) with [`TraceExt`](crate::trace::TraceExt)
+//! and [`Rewinds`](crate::rewind::Rewinds) with
+//! [`RewindExt`](crate::rewind::RewindExt) are built this way, and user
+//! state can live in the context the same way.
+//!
+//! Getters borrow the whole context, so a returned reference can't be held
+//! across another call that needs the context. Drop the borrow first, or
+//! [`remove`](Context::remove) the value and [`insert`](Context::insert) it
+//! back around the call.
+
 use std::{
     any::{Any, TypeId},
     collections::HashMap,

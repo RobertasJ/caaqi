@@ -1,3 +1,6 @@
+//! A scratch playground that exercises caaqi. It isn't part of the library's
+//! API.
+
 use caaqi::prelude::*;
 
 fn noop(_: &mut Context, _: NodeKey) {}
