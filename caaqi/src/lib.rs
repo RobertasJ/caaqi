@@ -8,8 +8,10 @@ pub mod prelude {
         context::Context,
         id::Id,
         trace::{
-            AddChildError, AlreadyParented, HasChildren, NodeKey, NodeMut, NodeRef, SelfParent,
-            SetParentError, Trace, TraceExt, UnknownChild, UnknownNode, UnknownParent, WouldCycle,
+            AddChildError, AlreadyParented, DeleteError, HasChildren, HasRewinds, InsideRewind,
+            NodeKey, NodeMut, NodeRef, NotRewound, RewindKey, RunError, Runner, RunnerInUse,
+            SelfParent, SetParentError, Trace, TraceExt, UnknownChild, UnknownNode, UnknownParent,
+            WouldCycle,
         },
         trace_iter::{TopDownCursor, TopDownWalk, TraceIterExt},
     };

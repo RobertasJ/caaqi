@@ -205,8 +205,11 @@ mod tests {
 
     use super::*;
 
+    /// A runner for nodes whose runs don't matter.
+    fn noop(_: &mut Context, _: NodeKey) {}
+
     fn child(ctx: &mut Context, parent: NodeKey) -> NodeKey {
-        let mut node = ctx.create_node();
+        let mut node = ctx.create_node(noop);
         node.set_parent(parent).unwrap();
         node.id()
     }
@@ -221,7 +224,7 @@ mod tests {
     /// ```
     fn tree() -> (Context, NodeKey, [NodeKey; 5]) {
         let mut ctx = Context::new();
-        let root = ctx.create_node().id();
+        let root = ctx.create_node(noop).id();
         let a = child(&mut ctx, root);
         let a1 = child(&mut ctx, a);
         let a2 = child(&mut ctx, a);
@@ -234,7 +237,7 @@ mod tests {
     /// child.
     fn ctx_tree() -> (Context, [NodeKey; 4]) {
         let mut ctx = Context::new();
-        let root = ctx.create_node().id();
+        let root = ctx.create_node(noop).id();
         let a = child(&mut ctx, root);
         let a_child = child(&mut ctx, a);
         let b = child(&mut ctx, root);
@@ -307,7 +310,7 @@ mod tests {
         while let Some(key) = cursor.next(&ctx) {
             order.push(key);
             if key == a {
-                ctx.node_mut(a_child).unwrap().delete_branch();
+                ctx.node_mut(a_child).unwrap().delete().unwrap();
             }
         }
         expect_eq!(order, [root, a, b]);
@@ -321,7 +324,7 @@ mod tests {
         while let Some(key) = cursor.next(&ctx) {
             order.push(key);
             if key == a {
-                ctx.node_mut(b).unwrap().delete_branch();
+                ctx.node_mut(b).unwrap().delete().unwrap();
             }
         }
         expect_eq!(order, [root, a, a_child]);
@@ -383,8 +386,10 @@ mod tests {
 
     #[gtest]
     fn walks_reject_unknown_nodes() {
-        let (mut ctx, _, [a, a1, ..]) = tree();
-        ctx.node_mut(a).unwrap().delete_branch();
+        let (mut ctx, _, [a, a1, a2, ..]) = tree();
+        for key in [a1, a2, a] {
+            ctx.node_mut(key).unwrap().delete().unwrap();
+        }
 
         expect_true!(ctx.ancestors(a1).is_err());
         expect_true!(ctx.subtree_top_down(a).is_err());

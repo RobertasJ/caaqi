@@ -1,12 +1,14 @@
 use caaqi::prelude::*;
 
+fn noop(_: &mut Context, _: NodeKey) {}
+
 fn main() -> Result<(), SetParentError> {
     let mut ctx = Context::new();
 
-    let root = ctx.create_node().id();
-    let a = ctx.create_node().id();
-    let a1 = ctx.create_node().id();
-    let b = ctx.create_node().id();
+    let root = ctx.create_node(noop).id();
+    let a = ctx.create_node(noop).id();
+    let a1 = ctx.create_node(noop).id();
+    let b = ctx.create_node(noop).id();
 
     ctx.node_mut(a).unwrap().set_parent(root)?;
     ctx.node_mut(a1).unwrap().set_parent(a)?;
