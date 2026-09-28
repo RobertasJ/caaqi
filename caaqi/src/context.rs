@@ -5,10 +5,12 @@
 //! with [`get_or_insert_with`](Context::get_or_insert_with), and an
 //! extension trait implemented for `Context` that holds every public
 //! operation on it, reads included. The resource's own methods stay private.
-//! [`Trace`](crate::trace::Trace) with [`TraceExt`](crate::trace::TraceExt)
-//! and [`Rewinds`](crate::rewind::Rewinds) with
-//! [`RewindExt`](crate::rewind::RewindExt) are built this way, and user
-//! state can live in the context the same way.
+//! [`Trace`](crate::raw::trace::Trace) with
+//! [`TraceExt`](crate::raw::trace::TraceExt),
+//! [`Rewinds`](crate::raw::rewind::Rewinds) with
+//! [`RewindExt`](crate::raw::rewind::RewindExt) and
+//! [`Current`](crate::node::Current) with [`NodeExt`](crate::node::NodeExt)
+//! are built this way, and user state can live in the context the same way.
 //!
 //! Getters borrow the whole context, so a returned reference can't be held
 //! across another call that needs the context. Drop the borrow first, or
@@ -23,7 +25,7 @@ use std::{
 /// A type-map of resources: one value per type, global to the context.
 ///
 /// Everything lives here, including caaqi's own state (see
-/// [`Trace`](crate::trace::Trace)). Modules expose their API as
+/// [`Trace`](crate::raw::trace::Trace)). Modules expose their API as
 /// extension traits implemented for `Context`.
 ///
 /// Values are dropped only by `remove`. Returned references borrow the whole

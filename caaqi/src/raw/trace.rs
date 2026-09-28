@@ -17,7 +17,8 @@
 //! resources through [`NodeRef::context`], [`NodeMut::context`] and
 //! [`NodeMut::context_mut`].
 //!
-//! Multi-step walks over the trace are in [`trace_iter`](crate::trace_iter).
+//! Multi-step walks over the trace are in
+//! [`trace_iter`](crate::raw::trace_iter).
 
 use std::panic::{self, AssertUnwindSafe};
 

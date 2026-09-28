@@ -43,7 +43,7 @@ use smallvec::SmallVec;
 
 use crate::{
     context::Context,
-    trace::{NodeKey, TraceExt, UnknownNode},
+    raw::trace::{NodeKey, TraceExt, UnknownNode},
 };
 
 new_key_type! {
