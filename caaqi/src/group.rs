@@ -36,7 +36,6 @@ use slotmap::{SecondaryMap, SlotMap, new_key_type};
 
 use crate::{
     context::Context,
-    rewind::{RewindExt, RewindKey},
     trace::{NodeKey, TraceExt, UnknownNode},
 };
 
