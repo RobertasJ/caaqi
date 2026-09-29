@@ -177,10 +177,8 @@ impl Rewinds {
     }
 
     /// The keys of `node`'s rewinds, running ones included.
-    fn keys(&self, node: NodeKey) -> Vec<RewindKey> {
-        self.by_node
-            .get(node)
-            .map_or_else(Vec::new, |keys| keys.to_vec())
+    fn keys(&self, node: NodeKey) -> impl Iterator<Item = RewindKey> + '_ {
+        self.by_node.get(node).into_iter().flatten().copied()
     }
 
     /// Shuffles `keys` in debug builds, and leaves them as they are
@@ -215,11 +213,14 @@ pub trait RewindExt {
     ) -> Result<RewindKey, UnknownNode>;
 
     /// The keys of `node`'s rewinds that haven't finished running, in no
-    /// particular order. The list is a copy: it doesn't change when rewinds
-    /// are added or run later.
+    /// particular order. The iterator borrows the context, so collect it
+    /// first if you need the keys while changing the context.
     ///
     /// Fails if `node` isn't in the trace.
-    fn rewind_keys(&self, node: NodeKey) -> Result<Vec<RewindKey>, UnknownNode>;
+    fn rewind_keys(
+        &self,
+        node: NodeKey,
+    ) -> Result<impl Iterator<Item = RewindKey> + '_, UnknownNode>;
 
     /// Runs one rewind now and returns `true`. Returns `false`, and does
     /// nothing, if the rewind has already run or is running right now.
@@ -264,12 +265,16 @@ impl RewindExt for Context {
         Ok(rewinds_mut(self).insert(node, Box::new(f)))
     }
 
-    fn rewind_keys(&self, node: NodeKey) -> Result<Vec<RewindKey>, UnknownNode> {
+    fn rewind_keys(
+        &self,
+        node: NodeKey,
+    ) -> Result<impl Iterator<Item = RewindKey> + '_, UnknownNode> {
         // A deleted node's rewinds are left behind, so check the node.
         self.node(node)?;
         Ok(self
             .get::<Rewinds>()
-            .map_or_else(Vec::new, |rewinds| rewinds.keys(node)))
+            .into_iter()
+            .flat_map(move |rewinds| rewinds.keys(node)))
     }
 
     fn run_rewind(&mut self, key: RewindKey) -> bool {
@@ -299,7 +304,7 @@ impl RewindExt for Context {
     }
 
     fn rewind(&mut self, node: NodeKey) -> Result<(), UnknownNode> {
-        let mut keys = self.rewind_keys(node)?;
+        let mut keys: Vec<_> = self.rewind_keys(node)?.collect();
         rewinds_mut(self).shuffle(&mut keys);
         for key in keys {
             // `false` means something else already ran it, or it's running.

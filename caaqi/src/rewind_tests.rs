@@ -36,10 +36,16 @@ fn rewind_runs_every_rewind_once() {
                 .unwrap()
         })
         .collect();
-    expect_eq!(sorted(ctx.rewind_keys(node).unwrap()), sorted(keys.clone()));
+    expect_eq!(
+        sorted(ctx.rewind_keys(node).unwrap().collect::<Vec<_>>()),
+        sorted(keys.clone())
+    );
 
     ctx.rewind(node).unwrap();
-    expect_that!(ctx.rewind_keys(node).unwrap(), is_empty());
+    expect_that!(
+        ctx.rewind_keys(node).unwrap().collect::<Vec<_>>(),
+        is_empty()
+    );
     ctx.rewind(node).unwrap();
     expect_eq!(sorted(logged(&ctx)), ["0", "1", "2", "3", "4"]);
     for key in keys {
@@ -57,22 +63,27 @@ fn rewinds_registered_during_rewind_are_left_registered() {
     for i in 0..3 {
         ctx.register_rewind(node, move |ctx: &mut Context, _| {
             log(ctx, i);
-            ctx.register_rewind(node, move |ctx: &mut Context, _| log(ctx, format!("late {i}")))
-                .unwrap();
+            ctx.register_rewind(node, move |ctx: &mut Context, _| {
+                log(ctx, format!("late {i}"))
+            })
+            .unwrap();
         })
         .unwrap();
     }
 
     ctx.rewind(node).unwrap();
     expect_eq!(sorted(logged(&ctx)), ["0", "1", "2"]);
-    expect_that!(ctx.rewind_keys(node).unwrap().len(), eq(3));
+    expect_that!(ctx.rewind_keys(node).unwrap().count(), eq(3));
 
     ctx.rewind(node).unwrap();
     expect_eq!(
         sorted(logged(&ctx)),
         ["0", "1", "2", "late 0", "late 1", "late 2"]
     );
-    expect_that!(ctx.rewind_keys(node).unwrap(), is_empty());
+    expect_that!(
+        ctx.rewind_keys(node).unwrap().collect::<Vec<_>>(),
+        is_empty()
+    );
 }
 
 #[gtest]
@@ -89,10 +100,12 @@ fn a_rewind_gets_its_own_key_which_is_stale_afterwards() {
     let node = ctx.create_node(noop).id();
     let key = ctx
         .register_rewind(node, move |ctx: &mut Context, key| {
+            // The iterator borrows `ctx`, so finish with it before `run_rewind`.
+            let listed = ctx.rewind_keys(node).unwrap().any(|k| k == key);
             let seen = Seen {
                 key,
                 node: ctx.rewind_node_of(key),
-                listed: ctx.rewind_keys(node).unwrap().contains(&key),
+                listed,
                 ran_itself: ctx.run_rewind(key),
             };
             ctx.insert(seen);
@@ -190,7 +203,10 @@ fn a_rewind_can_rewind_another_node() {
     .unwrap();
 
     ctx.rewind(node).unwrap();
-    expect_that!(ctx.rewind_keys(other).unwrap(), is_empty());
+    expect_that!(
+        ctx.rewind_keys(other).unwrap().collect::<Vec<_>>(),
+        is_empty()
+    );
     let log = logged(&ctx);
     let (outer, inner) = log.split_last().unwrap();
     expect_eq!(sorted(inner.to_vec()), ["0", "1", "2"]);
@@ -213,10 +229,16 @@ fn a_panicking_rewind_is_removed_and_the_rest_stay_registered() {
     expect_true!(result.is_err());
     expect_that!(ctx.rewind_node_of(panicking), none());
     // The ones that didn't run before the panic are still registered.
-    expect_eq!(ctx.rewind_keys(node).unwrap().len(), 4 - logged(&ctx).len());
+    expect_eq!(
+        ctx.rewind_keys(node).unwrap().count(),
+        4 - logged(&ctx).len()
+    );
 
     ctx.rewind(node).unwrap();
-    expect_that!(ctx.rewind_keys(node).unwrap(), is_empty());
+    expect_that!(
+        ctx.rewind_keys(node).unwrap().collect::<Vec<_>>(),
+        is_empty()
+    );
     expect_eq!(sorted(logged(&ctx)), ["0", "1", "2", "3"]);
 }
 
@@ -251,7 +273,7 @@ fn a_node_with_rewinds_can_run() {
 
     expect_eq!(ctx.node_mut(node).unwrap().run(), Ok(()));
     expect_eq!(logged(&ctx), ["ran"]);
-    expect_eq!(ctx.rewind_keys(node).unwrap(), [key]);
+    expect_eq!(ctx.rewind_keys(node).unwrap().collect::<Vec<_>>(), [key]);
 }
 
 #[gtest]
