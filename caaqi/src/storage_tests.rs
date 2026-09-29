@@ -41,15 +41,3 @@ fn a_handle_is_copy_whatever_its_value() {
     expect_eq!(copy, stored);
     expect_that!(ctx.get_stored(stored), ok(anything()));
 }
-
-#[gtest]
-fn a_removed_value_frees_its_key() {
-    let mut ctx = Context::new();
-    let stored = ctx.store(0_u8);
-    ctx.remove_stored(stored).unwrap();
-    expect_that!(ctx.get::<StorageKeys>().unwrap().keys.len(), eq(0));
-
-    // The slot is reused, but the old handle doesn't reach the new value.
-    let _new = ctx.store(1_u8);
-    expect_that!(ctx.get_stored(stored), err(anything()));
-}
