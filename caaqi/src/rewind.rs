@@ -1,43 +1,68 @@
-//! Rewinds: code registered on a node to undo what its run did, built only on
-//! the trace's public API.
+//! Rewinds: code that undoes what a node's run did.
 //!
-//! A rewind is a [`RewindWithKey`], such as an `FnOnce(&mut Context,
-//! RewindKey)` closure, registered on a node with
-//! [`register_rewind`](RewindExt::register_rewind), and run by
-//! [`rewind`](RewindExt::rewind) (all of a node's rewinds) or
-//! [`run_rewind`](RewindExt::run_rewind) (one, by key). Each runs at most
-//! once.
+//! When a node's run changes some state, it also registers a rewind on the
+//! node with [`register_rewind`](RewindExt::register_rewind): code that puts
+//! the state back. Before running the node again, call
+//! [`rewind`](RewindExt::rewind) on it, which runs all its rewinds. Each
+//! rewind runs at most once.
 //!
-//! # Ordering
+//! ```
+//! use caaqi::prelude::*;
 //!
-//! - The order `rewind` runs a node's rewinds in is unspecified, and code must
-//!   not depend on it: debug builds shuffle it. To run one rewind before
-//!   another **in the same node**, have the other call `run_rewind` on it.
-//! - To reach across nodes, call `rewind` on the other node. Calling
-//!   `run_rewind` on a rewind of **another** node is strongly discouraged: it
-//!   leaves that node partially rewound.
-//! - Calling `rewind` on your **own** node from inside one of its rewinds
-//!   only delays your work until the others have run.
-//! - `rewind` works on a snapshot of the node's rewinds: rewinds registered
-//!   on the node while it runs aren't run by it, and stay registered.
+//! let mut ctx = Context::new();
+//! ctx.insert(Vec::<&str>::new());
+//! let node = ctx
+//!     .create_node(|ctx: &mut Context, node| {
+//!         ctx.get_mut::<Vec<&str>>().unwrap().push("hello");
+//!         ctx.register_rewind(node, |ctx: &mut Context, _| {
+//!             ctx.get_mut::<Vec<&str>>().unwrap().pop();
+//!         })
+//!         .unwrap();
+//!     })
+//!     .id();
+//!
+//! ctx.node_mut(node)?.run()?;
+//! ctx.rewind(node)?;
+//! ctx.node_mut(node)?.run()?;
+//! assert_eq!(ctx.get::<Vec<&str>>().unwrap(), &["hello"]);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! # Order
+//!
+//! - The order in which [`rewind`](RewindExt::rewind) runs a node's rewinds
+//!   is unspecified, and your code must not depend on it. Debug builds
+//!   shuffle it on purpose, to catch code that does.
+//! - To run one rewind before another **on the same node**, have the later
+//!   one call [`run_rewind`](RewindExt::run_rewind) on the earlier one
+//!   first.
+//! - To rewind **another** node, call `rewind` on that node. Avoid calling
+//!   `run_rewind` on another node's rewinds: it leaves that node only
+//!   partly rewound.
+//! - Calling `rewind` on a rewind's own node, from inside that rewind, runs
+//!   the node's other rewinds first. Use it to do your work after theirs.
 //!
 //! # Keys
 //!
-//! A rewind receives its own key. The key stays valid while the rewind runs,
-//! so the rewind can clean up after itself (for example, remove its key from
-//! sets it was added to); afterwards it's stale.
+//! Each rewind is given its own [`RewindKey`] when it runs. The key stays
+//! valid while the rewind runs, so the rewind can use it to clean up after
+//! itself, for example by removing the key from places it was stored. Once
+//! the rewind has finished, the key no longer refers to anything.
 //!
-//! # Nothing is enforced
+//! # Things to keep in mind
 //!
-//! Rewinds can be registered at any time, on any node, running or not, and
-//! inside other rewinds. The trace doesn't know about them, so:
+//! Rewinds can be registered at any time, on any node, including while the
+//! node is running and from inside other rewinds. Nothing enforces how
+//! they're used, so:
 //!
-//! - Don't let rewinds accumulate: rewind a node before rerunning it.
-//! - Rewind a node before deleting it. A deleted node's rewinds are never
-//!   run, and their storage isn't reclaimed.
-//!
-//! A panic in a rewind consumes only that rewind; the rest stay registered,
-//! and calling `rewind` again runs them.
+//! - Rewind a node before running it again. Otherwise its old rewinds pile
+//!   up alongside the new ones.
+//! - Rewind a node before deleting it. A deleted node's rewinds never run.
+//! - `rewind` only runs the rewinds that were registered when it started.
+//!   Rewinds registered on the node while it's rewinding stay registered
+//!   for the next `rewind`.
+//! - If a rewind panics, only that rewind is used up. The node's other
+//!   rewinds stay registered, and calling `rewind` again runs them.
 
 use slotmap::{SecondaryMap, SlotMap, new_key_type};
 use smallvec::SmallVec;
@@ -48,17 +73,19 @@ use crate::{
 };
 
 new_key_type! {
-    /// A rewind registered with [`RewindExt::register_rewind`]. Like
-    /// [`NodeKey`], only valid in the `Context` that created it.
+    /// Identifies a rewind. Get one from [`RewindExt::register_rewind`].
     pub struct RewindKey;
 }
 
-/// Code registered on a node with [`RewindExt::register_rewind`] and run
-/// once, with its own key, to undo what the node's run did. Closures taking
-/// `(&mut Context, RewindKey)` are rewinds.
+/// Code that undoes what a node's run did. Register it on a node with
+/// [`RewindExt::register_rewind`]; it runs once, and is given its own key.
 ///
-/// For code that doesn't take the rewind's key, see
-/// [`current::Rewind`](crate::current::Rewind).
+/// Any `FnOnce(&mut Context, RewindKey)` closure is a rewind. Annotate the
+/// closure's parameter types (`|ctx: &mut Context, key| ...`), because Rust
+/// can't infer them here.
+///
+/// If your code doesn't need to be given its key, use a
+/// [`current::Rewind`](crate::current::Rewind) instead.
 pub trait RewindWithKey: 'static {
     fn rewind(self: Box<Self>, ctx: &mut Context, key: RewindKey);
 }
@@ -75,13 +102,10 @@ struct RewindEntry {
     rewind: Option<Box<dyn RewindWithKey>>,
 }
 
-/// The rewinds resource: every registered rewind that hasn't finished
-/// running, and the node it belongs to.
-///
-/// Everything public goes through [`RewindExt`]. See the
-/// [module docs](self) for the rules.
+/// The rewinds resource: every rewind that hasn't finished running, and the
+/// node it's registered on. Everything public goes through [`RewindExt`].
 #[derive(Default)]
-pub struct Rewinds {
+struct Rewinds {
     entries: SlotMap<RewindKey, RewindEntry>,
     by_node: SecondaryMap<NodeKey, SmallVec<[RewindKey; 2]>>,
     /// Shuffles the order [`RewindExt::rewind`] runs rewinds in.
@@ -175,58 +199,58 @@ fn rewinds_mut(ctx: &mut Context) -> &mut Rewinds {
     ctx.get_or_insert_with(Rewinds::default)
 }
 
-/// Registering and running rewinds. See the [module docs](self) for the
-/// rules.
+/// Registering and running rewinds. See the [module docs](self) for an
+/// example and for the rules.
 pub trait RewindExt {
-    /// Registers `f` as a rewind of `node`, and returns its key, which `f`
-    /// receives when it runs.
+    /// Registers `f` as a rewind of `node`, and returns its key. `f` is given
+    /// the same key when it runs.
     ///
-    /// Allowed at any time: on running nodes, and inside other rewinds. Fails
-    /// only if `node` isn't in the trace.
+    /// You can register rewinds at any time, including while `node` is
+    /// running and from inside other rewinds. Fails only if `node` isn't in
+    /// the trace.
     fn register_rewind(
         &mut self,
         node: NodeKey,
         f: impl RewindWithKey,
     ) -> Result<RewindKey, UnknownNode>;
 
-    /// A snapshot of the keys of `node`'s rewinds, running ones included, in
-    /// unspecified order.
+    /// The keys of `node`'s rewinds that haven't finished running, in no
+    /// particular order. The list is a copy: it doesn't change when rewinds
+    /// are added or run later.
+    ///
+    /// Fails if `node` isn't in the trace.
     fn rewind_keys(&self, node: NodeKey) -> Result<Vec<RewindKey>, UnknownNode>;
 
-    /// Runs the rewind `key` now, and returns `true`. Returns `false` if it's
-    /// gone because it already ran, or if it's running.
+    /// Runs one rewind now and returns `true`. Returns `false`, and does
+    /// nothing, if the rewind has already run or is running right now.
     ///
-    /// Its entry stays in place while it runs, so the rewind can use its own
-    /// key, and is removed afterwards, even if it panics.
+    /// Use it to order rewinds **on the same node**: a rewind that must run
+    /// after another calls `run_rewind` on that one first. Avoid using it on
+    /// another node's rewinds, which leaves that node only partly rewound;
+    /// call [`rewind`](Self::rewind) on that node instead.
     ///
-    /// Use it to order rewinds **in the same node**: a rewind that must run
-    /// after another calls `run_rewind` on it. Calling it on a rewind of
-    /// another node is strongly discouraged, because that node is left
-    /// partially rewound; call [`rewind`](Self::rewind) on it instead.
-    ///
-    /// A key that never existed looks the same as one that already ran.
-    /// That's fine: rewind keys only come from
-    /// [`register_rewind`](Self::register_rewind), and keys from other
-    /// contexts are unsupported.
+    /// The rewind is used up even if it panics.
     fn run_rewind(&mut self, key: RewindKey) -> bool;
 
-    /// Runs `node`'s rewinds, each with [`run_rewind`](Self::run_rewind).
+    /// Runs all of `node`'s rewinds, undoing what its runs did. Call it
+    /// before running the node again, and before deleting it.
     ///
-    /// It works on a snapshot taken when it starts: rewinds registered on
-    /// `node` meanwhile aren't run, and stay registered. Rewinds that are
-    /// gone or running by the time their turn comes are skipped.
+    /// Only the rewinds registered when it starts are run. Rewinds registered
+    /// on `node` in the meantime stay registered. Rewinds that have already
+    /// run, or are running, by the time their turn comes are skipped.
     ///
-    /// The order is unspecified, and code must not depend on it: debug
-    /// builds shuffle it. Called on a rewind's own node from inside that
-    /// rewind, it runs the others, so the caller's work comes after them.
+    /// The order is unspecified, and your code must not depend on it: debug
+    /// builds shuffle it. See the [module docs](self#order) for how to order
+    /// rewinds.
     ///
-    /// If a rewind panics, the panic is passed on and the rewinds that
-    /// hadn't run stay registered; calling `rewind` again runs them. Fails
-    /// only if `node` isn't in the trace.
+    /// If a rewind panics, the panic is passed on, and the rewinds that
+    /// hadn't run yet stay registered; calling `rewind` again runs them.
+    /// Fails only if `node` isn't in the trace.
     fn rewind(&mut self, node: NodeKey) -> Result<(), UnknownNode>;
 
-    /// The node the rewind `key` belongs to, or `None` once it's gone. It's
-    /// still there while the rewind runs.
+    /// The node the rewind was registered on, or `None` once the rewind has
+    /// finished running. While the rewind runs, this still returns its
+    /// node.
     fn rewind_node_of(&self, key: RewindKey) -> Option<NodeKey>;
 }
 

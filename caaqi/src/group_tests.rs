@@ -28,7 +28,7 @@ fn expect_consistent(ctx: &Context) {
     let Some(groups) = ctx.get::<Groups>() else {
         return;
     };
-    for (&group, members) in &groups.members {
+    for (group, members) in &groups.members {
         for &node in members.iter().filter(|&&node| ctx.contains_node(node)) {
             expect_true!(
                 groups.groups_of(node).any(|member_of| member_of == group),
@@ -359,87 +359,4 @@ fn refused_deletes_keep_memberships() {
 
     expect_that!(members(&ctx, group), { eq(&root) });
     expect_consistent(&ctx);
-}
-
-#[gtest]
-fn until_rewind_memberships_end_when_the_node_is_rewound() {
-    let mut ctx = Context::new();
-    let group = ctx.create_group();
-    let node = node(&mut ctx);
-
-    let rewind = ctx.add_to_group_until_rewind(group, node).unwrap();
-    expect_that!(ctx.group_contains(group, node), ok(eq(true)));
-    expect_that!(ctx.rewind_keys(node).unwrap(), elements_are![eq(&rewind)]);
-
-    ctx.rewind(node).unwrap();
-    expect_that!(ctx.group_contains(group, node), ok(eq(false)));
-    expect_that!(groups_of(&ctx, node), is_empty());
-    expect_consistent(&ctx);
-}
-
-#[gtest]
-fn until_rewind_ends_an_existing_membership_too() {
-    let mut ctx = Context::new();
-    let group = ctx.create_group();
-    let node = node(&mut ctx);
-    ctx.add_to_group(group, node).unwrap();
-
-    ctx.add_to_group_until_rewind(group, node).unwrap();
-    expect_that!(ctx.rewind_keys(node).unwrap().len(), eq(1));
-
-    ctx.rewind(node).unwrap();
-    expect_that!(ctx.group_contains(group, node), ok(eq(false)));
-}
-
-#[gtest]
-fn until_rewind_registers_nothing_when_it_fails() {
-    let mut ctx = Context::new();
-    let node = node(&mut ctx);
-    let removed = ctx.create_group();
-    ctx.remove_group(removed).unwrap();
-
-    expect_that!(
-        ctx.add_to_group_until_rewind(removed, node),
-        err(eq(AddToGroupError::UnknownGroup(UnknownGroup(removed))))
-    );
-    expect_that!(ctx.rewind_keys(node).unwrap(), is_empty());
-}
-
-#[gtest]
-fn until_rewind_survives_its_membership_being_removed() {
-    let mut ctx = Context::new();
-    let group = ctx.create_group();
-    let node = node(&mut ctx);
-    ctx.add_to_group_until_rewind(group, node).unwrap();
-    ctx.remove_from_group(group, node).unwrap();
-
-    ctx.rewind(node).unwrap();
-    expect_that!(ctx.rewind_keys(node).unwrap(), is_empty());
-    expect_that!(members(&ctx, group), is_empty());
-}
-
-#[gtest]
-fn until_rewind_keeps_rewound_and_deleted_nodes_out() {
-    let mut ctx = Context::new();
-    let group = ctx.create_group();
-    let node = node(&mut ctx);
-    ctx.add_to_group_until_rewind(group, node).unwrap();
-
-    ctx.rewind(node).unwrap();
-    delete(&mut ctx, node);
-    expect_that!(members(&ctx, group), is_empty());
-    expect_consistent(&ctx);
-}
-
-#[gtest]
-fn until_rewind_survives_its_group_being_removed() {
-    let mut ctx = Context::new();
-    let group = ctx.create_group();
-    let node = node(&mut ctx);
-    ctx.add_to_group_until_rewind(group, node).unwrap();
-    ctx.remove_group(group).unwrap();
-
-    ctx.rewind(node).unwrap();
-    expect_that!(ctx.rewind_keys(node).unwrap(), is_empty());
-    expect_that!(groups_of(&ctx, node), is_empty());
 }

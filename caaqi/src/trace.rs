@@ -1,23 +1,58 @@
-//! The trace: the tree of nodes that computation runs in, and each node's
-//! runner.
+//! The trace: the tree of nodes your computation runs in.
 //!
-//! The trace is a forest. Each node has at most one parent, any number of
-//! children, and a [`RunnerWithNode`], the code that runs it. Nodes are also
-//! linked in trace order, parents before their children (see [`Trace`]).
+//! Every node has a runner, the code that runs it, and can have a parent and
+//! any number of children. A node without a parent is a root, so the trace
+//! can hold several separate trees.
 //!
-//! [`TraceExt`] creates nodes and hands out handles to them, like bevy's
-//! `EntityRef` / `EntityWorldMut`: [`NodeRef`] for reads and [`NodeMut`] for
-//! reads and writes. Every write has its own error type, which says exactly
-//! why it was refused.
+//! Use [`TraceExt`] to create nodes and to get handles to them: [`NodeRef`]
+//! to read a node, [`NodeMut`] to also change or run it.
 //!
-//! The trace knows only structure and runners. Nodes are created and deleted
-//! without notifying anyone, and everything else about a node, rewinds
-//! included, lives in other resources keyed by [`NodeKey`]. Other modules add
-//! per-node methods through extension traits on the handles, reaching their
-//! resources through [`NodeRef::context`], [`NodeMut::context`] and
-//! [`NodeMut::context_mut`].
+//! ```
+//! use caaqi::prelude::*;
 //!
-//! Multi-step walks over the trace are in
+//! let mut ctx = Context::new();
+//! let parent = ctx.create_node(|_: &mut Context, _| {}).id();
+//! let child = ctx
+//!     .create_node(|_: &mut Context, node| println!("running {node:?}"))
+//!     .id();
+//!
+//! ctx.node_mut(parent)?.add_child(child)?;
+//! assert_eq!(ctx.node(child)?.parent(), Some(parent));
+//!
+//! ctx.node_mut(child)?.run()?;
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! Every method that can fail returns an error type that says exactly why.
+//!
+//! The trace only knows about the tree and the runners. It doesn't tell
+//! anyone when a node is created or deleted, and anything else you want to
+//! keep per node belongs in your own state, keyed by [`NodeKey`].
+//!
+//! # Trace order
+//!
+//! Besides its parent and children, each node knows the node before and after
+//! it in trace order ([`prev`](NodeRef::prev) and [`next`](NodeRef::next)).
+//! Trace order is the order you'd read the tree in: each node comes before
+//! its children, and siblings come first to last. For example:
+//!
+//! ```text
+//! a           order: a, b, c, d
+//! ├── b
+//! │   └── c   c's next is d, and d's prev is c:
+//! └── d       b's whole subtree comes before d.
+//! ```
+//!
+//! Each tree has its own order: a root has no `prev`, the last node of its
+//! tree has no `next`, and the orders of two separate trees never connect.
+//!
+//! # Adding your own node methods
+//!
+//! You can add methods to the node handles with your own extension traits,
+//! the way bevy extends `EntityWorldMut`. Reach the rest of the state through
+//! [`NodeRef::context`], [`NodeMut::context`] and [`NodeMut::context_mut`].
+//!
+//! For walks over many nodes, such as all of a node's descendants, see
 //! [`trace_iter`](crate::trace_iter).
 
 use std::panic::{self, AssertUnwindSafe};
@@ -28,17 +63,20 @@ use smallvec::SmallVec;
 use crate::context::Context;
 
 new_key_type! {
-    /// Only valid in the `Context` that created it. Using a key with another
-    /// context is unsupported and may refer to an unrelated node.
+    /// Identifies a node in the trace. Get one from
+    /// [`TraceExt::create_node`], through the handle's `id`.
     pub struct NodeKey;
 }
 
-/// The code that runs a node, given to [`TraceExt::create_node`] and called
-/// by [`NodeMut::run`] with the node's key. Closures taking
-/// `(&mut Context, NodeKey)` are runners.
+/// The code that runs a node. Pass it to [`TraceExt::create_node`];
+/// [`NodeMut::run`] calls it with the node's key.
 ///
-/// For code that doesn't take the node's key, see
-/// [`current::Runner`](crate::current::Runner).
+/// Any `FnMut(&mut Context, NodeKey)` closure is a runner. Annotate the
+/// closure's parameter types (`|ctx: &mut Context, node| ...`), because Rust
+/// can't infer them here.
+///
+/// If your code doesn't need to be given the node's key, use a
+/// [`current::Runner`](crate::current::Runner) instead.
 pub trait RunnerWithNode: 'static {
     fn run(&mut self, ctx: &mut Context, node: NodeKey);
 }
@@ -49,22 +87,26 @@ impl<F: FnMut(&mut Context, NodeKey) + 'static> RunnerWithNode for F {
     }
 }
 
+/// Returned when a [`NodeKey`] doesn't refer to a node in the trace, for
+/// example because the node was deleted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("node {0:?} isn't in the trace")]
 pub struct UnknownNode(pub NodeKey);
 
-/// The parent passed to [`NodeMut::set_parent`] isn't in the trace.
+/// Returned by [`NodeMut::set_parent`] when the parent you passed isn't in
+/// the trace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("parent {:?} isn't in the trace", .0.0)]
 pub struct UnknownParent(#[source] pub UnknownNode);
 
-/// The child passed to [`NodeMut::add_child`] isn't in the trace.
+/// Returned by [`NodeMut::add_child`] when the child you passed isn't in the
+/// trace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("child {:?} isn't in the trace", .0.0)]
 pub struct UnknownChild(#[source] pub UnknownNode);
 
-/// The child already has a parent. Reparenting is explicit: call
-/// [`detach`](NodeMut::detach) first.
+/// Returned when attaching a node that already has a parent. To move a node
+/// to another parent, [`detach`](NodeMut::detach) it first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error(
     "node {child:?} already has parent {current_parent:?}; \
@@ -76,12 +118,14 @@ pub struct AlreadyParented {
     pub requested_parent: NodeKey,
 }
 
+/// Returned when attaching a node to itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("node {0:?} can't be its own parent")]
 pub struct SelfParent(pub NodeKey);
 
-/// The requested parent is a descendant of the child, `depth` levels below
-/// it.
+/// Returned when attaching a node under one of its own descendants, which
+/// would make the tree loop. `depth` is how many levels below `child` the
+/// requested parent is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error(
     "parenting {child:?} under {parent:?} would create a cycle; \
@@ -93,7 +137,8 @@ pub struct WouldCycle {
     pub depth: usize,
 }
 
-/// [`NodeMut::delete`] only deletes leaves.
+/// Returned by [`NodeMut::delete`] for a node that still has children. Only
+/// nodes without children can be deleted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error(
     "node {key:?} has {children} child(ren); \
@@ -104,11 +149,12 @@ pub struct HasChildren {
     pub children: usize,
 }
 
-/// The node's runner is taken out because the node is running.
+/// Returned when running or deleting a node that is already running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("node {0:?} is running")]
 pub struct RunnerInUse(pub NodeKey);
 
+/// Why [`NodeMut::set_parent`] failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SetParentError {
     #[error(transparent)]
@@ -121,6 +167,7 @@ pub enum SetParentError {
     WouldCycle(#[from] WouldCycle),
 }
 
+/// Why [`NodeMut::add_child`] failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum AddChildError {
     #[error(transparent)]
@@ -133,6 +180,7 @@ pub enum AddChildError {
     WouldCycle(#[from] WouldCycle),
 }
 
+/// Why [`NodeMut::delete`] failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum DeleteError {
     #[error(transparent)]
@@ -141,28 +189,14 @@ pub enum DeleteError {
     HasChildren(#[from] HasChildren),
 }
 
-/// The trace resource. It holds the shape of the trace and each node's
-/// runner; other per-node data, rewinds included, lives in other resources
-/// keyed by [`NodeKey`].
+/// The trace resource: every node's links and runner. Everything public goes
+/// through [`TraceExt`] and the node handles.
 ///
-/// Everything public goes through [`TraceExt`] and the node handles it
-/// returns, [`NodeRef`] and [`NodeMut`].
-///
-/// Besides parent and children links, every node is linked to its `prev` and
-/// `next` node in trace order: each node before its descendants, siblings
-/// first to last. So a node's `prev` is its previous sibling's last
-/// descendant (or that sibling itself, when it's a leaf), or its parent when
-/// it's a first child. Each root's tree has its own order: a root has no
-/// `prev`, the last node of its tree has no `next`, and the orders of two
-/// roots never link.
-///
-/// # Running
-///
-/// Every node has a [`RunnerWithNode`], the code that runs it, called by
-/// [`run`](NodeMut::run). A running node can't be run again or deleted.
-/// Undoing what a run did is left to layers built on top of the trace.
+/// Each node before its descendants, siblings first to last, is linked by
+/// `prev` / `next`. So a node's `prev` is its previous sibling's last
+/// descendant, or its parent when it's a first child.
 #[derive(Default)]
-pub struct Trace {
+struct Trace {
     nodes: SlotMap<NodeKey, Node>,
 }
 
@@ -396,7 +430,7 @@ fn trace_mut(ctx: &mut Context) -> &mut Trace {
     ctx.get_or_insert_with(Trace::default)
 }
 
-/// Read access to a node in the trace, returned by [`TraceExt::node`].
+/// A handle for reading a node, returned by [`TraceExt::node`].
 #[derive(Clone, Copy)]
 pub struct NodeRef<'a> {
     ctx: &'a Context,
@@ -413,52 +447,52 @@ impl<'a> NodeRef<'a> {
             .expect("the handle's node is in the trace")
     }
 
+    /// The node's key.
     pub fn id(&self) -> NodeKey {
         self.key
     }
 
-    /// The context this handle reads from, for extension traits that add
-    /// per-node methods.
+    /// The context this handle reads from. Useful when writing your own
+    /// extension traits for node handles.
     pub fn context(&self) -> &'a Context {
         self.ctx
     }
 
-    /// The parent of this node, or `None` for a root.
+    /// The node's parent, or `None` if it's a root.
     pub fn parent(&self) -> Option<NodeKey> {
         self.data().parent
     }
 
-    /// The children of this node, first to last.
+    /// The node's children, first to last.
     pub fn children(&self) -> &'a [NodeKey] {
         &self.data().children
     }
 
-    /// The node before this one in trace order, or `None` for a root.
-    /// See [`Trace`] for the order.
+    /// The node before this one in [trace order](self#trace-order), or
+    /// `None` if this is a root.
     pub fn prev(&self) -> Option<NodeKey> {
         self.data().prev
     }
 
-    /// The node after this one in trace order, or `None` for the last node of
-    /// its tree.
-    /// See [`Trace`] for the order.
+    /// The node after this one in [trace order](self#trace-order), or `None`
+    /// if this is the last node of its tree.
     pub fn next(&self) -> Option<NodeKey> {
         self.data().next
     }
 
-    /// Whether this node is running: [`NodeMut::run`] has its runner taken
-    /// out.
+    /// Whether the node is running right now, which is the case while its
+    /// runner, or code its runner called, is executing.
     pub fn is_running(&self) -> bool {
         self.data().runner.is_none()
     }
 }
 
-/// Write access to a node in the trace, returned by [`TraceExt::node_mut`]
-/// and [`TraceExt::create_node`].
+/// A handle for reading, changing and running a node, returned by
+/// [`TraceExt::node_mut`] and [`TraceExt::create_node`].
 ///
-/// Reparenting is explicit: a node that has a parent must be detached with
-/// [`detach`](Self::detach) before it's attached elsewhere. A
-/// node's whole subtree moves with it.
+/// When you attach or detach a node, its children and their descendants move
+/// with it. To move a node that already has a parent, first
+/// [`detach`](Self::detach) it, then attach it elsewhere.
 pub struct NodeMut<'a> {
     ctx: &'a mut Context,
     key: NodeKey,
@@ -471,29 +505,30 @@ impl NodeMut<'_> {
             .expect("a node exists, so the trace does")
     }
 
+    /// The node's key.
     pub fn id(&self) -> NodeKey {
         self.key
     }
 
-    /// The context this handle writes to, for extension traits that add
-    /// per-node methods.
+    /// The context this handle belongs to. Useful when writing your own
+    /// extension traits for node handles.
     pub fn context(&self) -> &Context {
         self.ctx
     }
 
-    /// Mutable access to the context this handle writes to, for extension
-    /// traits that add per-node methods.
+    /// The context this handle belongs to, mutably. Useful when writing your
+    /// own extension traits for node handles.
     ///
-    /// # Danger
+    /// # Don't delete this node
     ///
-    /// Code using the context directly can change the trace behind the
-    /// handle's back, and may also run or rewind nodes, this one included. It
-    /// must not delete this node: the handle's methods may panic afterwards.
-    /// Extension traits must leave the handle's node in place.
+    /// You may use the context to change the trace, and to run or rewind
+    /// nodes, this one included. But don't delete this handle's node: the
+    /// handle's methods may panic afterwards.
     pub fn context_mut(&mut self) -> &mut Context {
         self.ctx
     }
 
+    /// A read-only handle to the same node.
     pub fn as_ref(&self) -> NodeRef<'_> {
         NodeRef {
             ctx: self.ctx,
@@ -501,37 +536,39 @@ impl NodeMut<'_> {
         }
     }
 
-    /// The parent of this node, or `None` for a root.
+    /// The node's parent, or `None` if it's a root.
     pub fn parent(&self) -> Option<NodeKey> {
         self.as_ref().parent()
     }
 
-    /// The children of this node, first to last.
+    /// The node's children, first to last.
     pub fn children(&self) -> &[NodeKey] {
         self.as_ref().children()
     }
 
-    /// The node before this one in trace order, or `None` for a root.
+    /// The node before this one in [trace order](self#trace-order), or
+    /// `None` if this is a root.
     pub fn prev(&self) -> Option<NodeKey> {
         self.as_ref().prev()
     }
 
-    /// The node after this one in trace order, or `None` for the last node of
-    /// its tree.
+    /// The node after this one in [trace order](self#trace-order), or `None`
+    /// if this is the last node of its tree.
     pub fn next(&self) -> Option<NodeKey> {
         self.as_ref().next()
     }
 
-    /// Whether this node is running: [`run`](Self::run) has its runner taken
-    /// out.
+    /// Whether the node is running right now, which is the case while its
+    /// runner, or code its runner called, is executing.
     pub fn is_running(&self) -> bool {
         self.as_ref().is_running()
     }
 
-    /// Calls this node's runner with this node's key.
+    /// Runs the node: calls its runner with the node's key.
     ///
-    /// Fails if the node is already running. If the runner panics, it's put
-    /// back before the panic is passed on.
+    /// Returns [`RunnerInUse`] if the node is already running, because a
+    /// node can't run inside its own run. If the runner panics, the panic is
+    /// passed on, and the node can be run again afterwards.
     pub fn run(&mut self) -> Result<(), RunnerInUse> {
         let key = self.key;
         let mut runner = self.trace_mut().take_runner(key)?;
@@ -543,7 +580,9 @@ impl NodeMut<'_> {
         Ok(())
     }
 
-    /// Makes this node the last child of `parent`.
+    /// Attaches this node, with all its descendants, as the last child of
+    /// `parent`. Does the same as calling [`add_child`](Self::add_child) on
+    /// `parent`.
     ///
     /// Fails if `parent` isn't in the trace, if this node already has a
     /// parent, or if `parent` is this node or one of its descendants.
@@ -553,7 +592,8 @@ impl NodeMut<'_> {
         Ok(self)
     }
 
-    /// Makes `child` this node's last child.
+    /// Attaches `child`, with all its descendants, as this node's last child.
+    /// Does the same as calling [`set_parent`](Self::set_parent) on `child`.
     ///
     /// Fails if `child` isn't in the trace, if it already has a parent, or if
     /// it's this node or one of its ancestors.
@@ -572,38 +612,49 @@ impl NodeMut<'_> {
         Ok(self)
     }
 
-    /// Detaches this node from its parent, making it a root whose subtree is
-    /// an order of its own. Returns whether it had one.
+    /// Detaches this node, with all its descendants, from its parent, making
+    /// it a root. Returns `false` if it had no parent to begin with.
     pub fn detach(&mut self) -> bool {
         let key = self.key;
         self.trace_mut().detach(key)
     }
 
-    /// Deletes this node, which must be a leaf that isn't running. Detaches
-    /// it from its parent first if it has one.
+    /// Deletes this node, detaching it from its parent first.
     ///
-    /// Nobody is notified: per-node data in other resources, rewinds
-    /// included, is left behind.
+    /// Fails if the node has children (delete or detach them first) or is
+    /// running.
+    ///
+    /// Nothing else is told about the deletion, so anything kept for this
+    /// node elsewhere stays behind. In particular,
+    /// [rewind](crate::rewind::RewindExt::rewind) the node before deleting
+    /// it, or its rewinds never run.
     pub fn delete(self) -> Result<(), DeleteError> {
         let Self { ctx, key } = self;
         trace_mut(ctx).remove_leaf(key)
     }
 }
 
+/// Creating nodes and getting handles to them. See the [module docs](self)
+/// for an example.
 pub trait TraceExt {
-    /// Whether `key` is in the trace.
+    /// Whether `key` refers to a node in the trace.
     fn contains_node(&self, key: NodeKey) -> bool;
 
-    /// Read access to `key`.
+    /// Returns a handle for reading the node, or [`UnknownNode`] if it isn't
+    /// in the trace.
     fn node(&self, key: NodeKey) -> Result<NodeRef<'_>, UnknownNode>;
 
-    /// Write access to `key`.
+    /// Returns a handle for changing and running the node, or
+    /// [`UnknownNode`] if it isn't in the trace.
     fn node_mut(&mut self, key: NodeKey) -> Result<NodeMut<'_>, UnknownNode>;
 
-    /// Creates a node run by `runner` that is not parented and has no
-    /// children. It's a root until attached with
+    /// Creates a node that runs `runner`, and returns a handle to it. Call
+    /// [`id`](NodeMut::id) on the handle to get its key.
+    ///
+    /// The new node has no parent and no children. Attach it with
     /// [`set_parent`](NodeMut::set_parent) or
-    /// [`add_child`](NodeMut::add_child), alone in its own trace order.
+    /// [`add_child`](NodeMut::add_child). It doesn't run until you call
+    /// [`run`](NodeMut::run).
     fn create_node(&mut self, runner: impl RunnerWithNode) -> NodeMut<'_>;
 }
 

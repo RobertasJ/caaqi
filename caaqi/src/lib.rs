@@ -1,8 +1,14 @@
 //! Rewindable, self-adjusting computation with fine-grained reactivity.
 //!
-//! Computation is modeled as a tree of nodes, the trace, where each node runs
-//! a runner. Nodes can be rerun, and what a run did is undone first by
-//! rewinding the node, without a framework hook system.
+//! In caaqi, your computation is a tree of nodes called the trace. Each node
+//! has a runner, the code it runs, and a node can create and run child nodes
+//! while it runs. Any node can be run again later. Before it is, you undo
+//! what its last run did by rewinding it: running the rewinds its last run
+//! registered. There are no hooks: everything is an explicit method on a
+//! [`Context`](context::Context).
+//!
+//! This example counts runs, and registers a rewind that takes the count
+//! back down:
 //!
 //! ```
 //! use caaqi::prelude::*;
@@ -32,30 +38,37 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
-//! # Layers
+//! # Modules
 //!
-//! The crate is built in layers, each depending only on the ones before it:
+//! - [`context`]: [`Context`](context::Context), which holds all state,
+//!   caaqi's and yours.
+//! - [`trace`]: creating nodes, arranging them into a tree and running them.
+//! - [`trace_iter`]: walking over the trace, such as through all of a node's
+//!   descendants.
+//! - [`rewind`]: registering code on a node that undoes what its run did.
+//! - [`current`]: runners and rewinds that don't need to be given their own
+//!   key, because they can ask the context for it.
+//! - [`group`]: named sets of nodes, for example the nodes that depend on
+//!   some piece of state.
+//! - [`storage`]: values of any type kept in the context, reached through
+//!   typed handles.
 //!
-//! 1. [`context`]: [`Context`](context::Context), a type-map of resources
-//!    that holds all state, caaqi's own included.
-//! 2. [`trace`]: the trace's structure and each node's runner, with
-//!    [`trace_iter`] for walks over it.
-//! 3. [`rewind`]: code registered on a node to undo what its run did.
-//! 4. [`group`]: sets of nodes, built on the trace and rewinds.
-//! 5. [`current`]: runners and rewinds that read their key from the context.
+//! Each module adds its methods to [`Context`](context::Context) through an
+//! extension trait. [`prelude`] imports the common ones.
 //!
-//! Each layer is a resource in the context plus an extension trait
-//! implemented for [`Context`](context::Context).
+//! Keys and handles, such as a node's [`NodeKey`](trace::NodeKey), only work
+//! with the context that created them. Using one with another context is a
+//! mistake that isn't detected: it may reach something unrelated.
 
 pub mod context;
 pub mod current;
 pub mod group;
-pub mod id;
 pub mod rewind;
+pub mod storage;
 pub mod trace;
 pub mod trace_iter;
 
-/// The common imports, in one: `use caaqi::prelude::*;`.
+/// The most common imports, in one line: `use caaqi::prelude::*;`.
 pub mod prelude {
     pub use crate::{
         context::Context,

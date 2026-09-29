@@ -1,40 +1,65 @@
-//! Walks over the trace, written only against the public [`TraceExt`] API.
+//! Walks over the trace: up through a node's ancestors, or down through a
+//! node and all its descendants.
 //!
-//! [`TraceIterExt`] has the multi-step walks: up to the root
-//! ([`ancestors`](TraceIterExt::ancestors)), and down through a subtree,
-//! parents first ([`subtree_top_down`](TraceIterExt::subtree_top_down)) or
-//! children first ([`subtree_bottom_up`](TraceIterExt::subtree_bottom_up)),
-//! with `_rev` variants that take siblings last to first. Single steps are on
-//! the node handles.
+//! [`TraceIterExt`] has the walks:
 //!
-//! Walks borrow the context. To change the trace during a top-down walk,
-//! turn it into a [`TopDownCursor`], which takes the context on each step
-//! instead.
+//! - [`ancestors`](TraceIterExt::ancestors): from a node's parent up to its
+//!   root.
+//! - [`subtree_top_down`](TraceIterExt::subtree_top_down): a node and its
+//!   descendants, each node before its children.
+//! - [`subtree_bottom_up`](TraceIterExt::subtree_bottom_up): a node and its
+//!   descendants, each node after its children.
+//!
+//! The `_rev` variants visit siblings last to first. For a single step, such
+//! as a node's parent or children, use the node handles from
+//! [`TraceExt::node`].
+//!
+//! ```
+//! use caaqi::{prelude::*, trace_iter::TraceIterExt};
+//!
+//! let mut ctx = Context::new();
+//! let root = ctx.create_node(|_: &mut Context, _| {}).id();
+//! let child = ctx.create_node(|_: &mut Context, _| {}).id();
+//! ctx.node_mut(root)?.add_child(child)?;
+//!
+//! let top_down: Vec<_> = ctx.subtree_top_down(root)?.collect();
+//! assert_eq!(top_down, [root, child]);
+//! let bottom_up: Vec<_> = ctx.subtree_bottom_up(root)?.collect();
+//! assert_eq!(bottom_up, [child, root]);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! A walk borrows the context, so you can't change the trace during it. To
+//! change the trace while walking top-down, turn the walk into a
+//! [`TopDownCursor`] with [`into_cursor`](TopDownWalk::into_cursor).
 
 use crate::{
     context::Context,
     trace::{NodeKey, TraceExt, UnknownNode},
 };
 
-/// A walk over a node and its descendants, each before its own descendants.
-/// [`skip_children`](Self::skip_children) keeps the walk out of the children
-/// of the node it just returned.
+/// A walk over a node and its descendants, each node before its children.
+/// Returned by [`TraceIterExt::subtree_top_down`].
 ///
-/// It borrows the context; use [`into_cursor`](Self::into_cursor) to walk
-/// while changing it.
+/// Call [`skip_children`](Self::skip_children) to skip the descendants of
+/// the node the walk just returned.
+///
+/// The walk borrows the context. To change the context while walking, turn
+/// it into a [`TopDownCursor`] with [`into_cursor`](Self::into_cursor).
 pub struct TopDownWalk<'a> {
     ctx: &'a Context,
     cursor: TopDownCursor,
 }
 
 impl TopDownWalk<'_> {
-    /// Skips the descendants of the node `next` returned last. Does nothing
-    /// before the first `next`, or when called twice in a row.
+    /// Skips the descendants of the node the walk returned last. Does
+    /// nothing before the walk has returned a node.
     pub fn skip_children(&mut self) {
         self.cursor.skip_children();
     }
 
-    /// Continues this walk without borrowing the context.
+    /// Turns this walk into a cursor that continues where it left off, but
+    /// doesn't borrow the context.
     pub fn into_cursor(self) -> TopDownCursor {
         self.cursor
     }
@@ -48,14 +73,26 @@ impl Iterator for TopDownWalk<'_> {
     }
 }
 
-/// A [`TopDownWalk`] that doesn't borrow the context: each
-/// [`next`](Self::next) takes it instead, so the context can be changed
-/// between calls.
+/// A top-down walk that doesn't borrow the context, so you can change the
+/// trace between steps. Get one from [`TopDownWalk::into_cursor`], and pass
+/// the context to each call of [`next`](Self::next).
 ///
-/// A node's children are read on the `next` call after it's returned, so
-/// children it gains or loses in between are taken into account, unless
-/// [`skip_children`](Self::skip_children) is called. Nodes removed in between
-/// are skipped.
+/// Changes you make between steps are taken into account: if you add
+/// children to the node the cursor just returned, they're visited, and nodes
+/// you delete are skipped.
+///
+/// ```
+/// use caaqi::{prelude::*, trace_iter::TraceIterExt};
+///
+/// let mut ctx = Context::new();
+/// let root = ctx.create_node(|_: &mut Context, _| {}).id();
+///
+/// let mut cursor = ctx.subtree_top_down(root)?.into_cursor();
+/// while let Some(node) = cursor.next(&ctx) {
+///     ctx.node_mut(node)?.run()?;
+/// }
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub struct TopDownCursor {
     pending: Vec<NodeKey>,
     /// The node returned last, whose children haven't been queued yet.
@@ -66,13 +103,13 @@ pub struct TopDownCursor {
 }
 
 impl TopDownCursor {
-    /// Skips the descendants of the node `next` returned last. Does nothing
-    /// before the first `next`, or when called twice in a row.
+    /// Skips the descendants of the node the cursor returned last. Does
+    /// nothing before the cursor has returned a node.
     pub fn skip_children(&mut self) {
         self.last = None;
     }
 
-    /// The next node of the walk, or `None` once it's done.
+    /// Returns the next node of the walk, or `None` once it's done.
     pub fn next(&mut self, ctx: &Context) -> Option<NodeKey> {
         // A node removed since it was returned has no children left to walk.
         if let Some(Ok(node)) = self.last.take().map(|last| ctx.node(last)) {
@@ -142,32 +179,35 @@ fn children_first(
     }))
 }
 
-/// Walks over the trace. The single steps (`parent`, `children`, `prev`,
-/// `next`) are on [`NodeRef`](crate::trace::NodeRef), from
-/// [`TraceExt::node`].
+/// Walks over the trace. See the [module docs](self) for an example.
+///
+/// Every walk fails with [`UnknownNode`] if `key` isn't in the trace.
 pub trait TraceIterExt {
-    /// Walks up from the parent of `key` to its root.
+    /// Walks up from the parent of `key` to its root. Returns nothing if
+    /// `key` is a root.
     fn ancestors(&self, key: NodeKey) -> Result<impl Iterator<Item = NodeKey> + '_, UnknownNode>;
 
-    /// Iterates `key` and its descendants, each before its own descendants,
-    /// so `key` comes first. Call
-    /// [`skip_children`](TopDownWalk::skip_children) to skip the descendants
-    /// of the node just returned.
+    /// Walks over `key` and its descendants, each node before its children,
+    /// so `key` comes first. Siblings are visited first to last. This is
+    /// [trace order](crate::trace#trace-order).
+    ///
+    /// Call [`skip_children`](TopDownWalk::skip_children) to skip the
+    /// descendants of the node just returned.
     fn subtree_top_down(&self, key: NodeKey) -> Result<TopDownWalk<'_>, UnknownNode>;
 
-    /// [`subtree_top_down`](Self::subtree_top_down) with siblings last to
-    /// first.
+    /// Like [`subtree_top_down`](Self::subtree_top_down), but visits siblings
+    /// last to first.
     fn subtree_top_down_rev(&self, key: NodeKey) -> Result<TopDownWalk<'_>, UnknownNode>;
 
-    /// Iterates `key` and its descendants, each after its own descendants, so
-    /// `key` comes last.
+    /// Walks over `key` and its descendants, each node after its children,
+    /// so `key` comes last. Siblings are visited first to last.
     fn subtree_bottom_up(
         &self,
         key: NodeKey,
     ) -> Result<impl Iterator<Item = NodeKey> + '_, UnknownNode>;
 
-    /// [`subtree_bottom_up`](Self::subtree_bottom_up) with siblings last to
-    /// first.
+    /// Like [`subtree_bottom_up`](Self::subtree_bottom_up), but visits
+    /// siblings last to first.
     fn subtree_bottom_up_rev(
         &self,
         key: NodeKey,
