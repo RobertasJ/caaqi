@@ -81,24 +81,16 @@ impl<T: 'static> fmt::Debug for Stored<T> {
 #[error("the stored value {0:?} was removed")]
 pub struct UnknownStored(StorageKey);
 
-/// The keys resource: the keys of all stored values, of every type. Sharing
-/// one set of keys across all types means a handle can never reach a value
-/// of another type. Everything public goes through [`StorageExt`].
-#[derive(Debug, Default)]
-struct StorageKeys {
-    keys: SlotMap<StorageKey, ()>,
-}
-
 /// The storage resource for values of type `T`, keyed by the keys in
 /// [`StorageKeys`]. Everything public goes through [`StorageExt`].
 struct Storage<T: 'static> {
-    values: SecondaryMap<StorageKey, T>,
+    values: SlotMap<StorageKey, T>,
 }
 
 impl<T: 'static> Default for Storage<T> {
     fn default() -> Self {
         Self {
-            values: SecondaryMap::new(),
+            values: SlotMap::with_key(),
         }
     }
 }
@@ -168,12 +160,10 @@ pub trait StorageExt {
 impl StorageExt for Context {
     fn store<T: 'static>(&mut self, value: T) -> Stored<T> {
         let key = self
-            .get_or_insert_with(StorageKeys::default)
-            .keys
-            .insert(());
-        self.get_or_insert_with(Storage::<T>::default)
+            .get_or_insert_with(Storage::<T>::default)
             .values
-            .insert(key, value);
+            .insert(value);
+
         Stored {
             key,
             _marker: PhantomData,
@@ -194,11 +184,7 @@ impl StorageExt for Context {
 
     fn remove_stored<T: 'static>(&mut self, stored: Stored<T>) -> Result<T, UnknownStored> {
         let value = storage_mut(self, stored)?.remove(stored)?;
-        self.get_mut::<StorageKeys>()
-            .expect("a stored value has a key")
-            .keys
-            .remove(stored.key)
-            .expect("a stored value has a key");
+
         Ok(value)
     }
 }
