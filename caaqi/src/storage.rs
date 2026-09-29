@@ -25,7 +25,7 @@
 
 use std::{fmt, hash, marker::PhantomData};
 
-use slotmap::{SecondaryMap, SlotMap, new_key_type};
+use slotmap::{SlotMap, new_key_type};
 
 use crate::context::Context;
 
