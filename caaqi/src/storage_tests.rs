@@ -41,3 +41,14 @@ fn a_handle_is_copy_whatever_its_value() {
     expect_eq!(copy, stored);
     expect_that!(ctx.get_stored(stored), ok(anything()));
 }
+
+#[gtest]
+fn a_removed_handle_stays_unknown_after_its_slot_is_reused() {
+    let mut ctx = Context::new();
+    let old = ctx.store(String::from("old"));
+    ctx.remove_stored(old).unwrap();
+    let new = ctx.store(String::from("new"));
+
+    expect_eq!(ctx.get_stored(old).unwrap_err(), UnknownStored(old.key));
+    expect_that!(ctx.get_stored(new), ok(eq("new")));
+}

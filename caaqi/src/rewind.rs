@@ -148,6 +148,9 @@ impl Rewinds {
             node,
             rewind: Some(rewind),
         });
+        // `node` was checked to be in the trace just before, so its key is
+        // the newest for its slot, and `entry` only returns `None` for a key
+        // older than the one stored for that slot.
         self.by_node
             .entry(node)
             .expect("a node in the trace has the newest key for its slot")
@@ -252,6 +255,10 @@ pub trait RewindExt {
     /// The node the rewind was registered on, or `None` once the rewind has
     /// finished running. While the rewind runs, this still returns its
     /// node.
+    ///
+    /// If that node was deleted, this still returns its key, which is now
+    /// stale. It returns `None` only once the rewind itself has finished
+    /// running.
     fn rewind_node_of(&self, key: RewindKey) -> Option<NodeKey>;
 }
 

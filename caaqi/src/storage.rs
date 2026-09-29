@@ -81,8 +81,8 @@ impl<T: 'static> fmt::Debug for Stored<T> {
 #[error("the stored value {0:?} was removed")]
 pub struct UnknownStored(StorageKey);
 
-/// The storage resource for values of type `T`, keyed by the keys in
-/// [`StorageKeys`]. Everything public goes through [`StorageExt`].
+/// The storage resource for values of type `T`: it holds them in their own
+/// slotmap, one per type. Everything public goes through [`StorageExt`].
 struct Storage<T: 'static> {
     values: SlotMap<StorageKey, T>,
 }
@@ -163,7 +163,6 @@ impl StorageExt for Context {
             .get_or_insert_with(Storage::<T>::default)
             .values
             .insert(value);
-
         Stored {
             key,
             _marker: PhantomData,
@@ -183,9 +182,7 @@ impl StorageExt for Context {
     }
 
     fn remove_stored<T: 'static>(&mut self, stored: Stored<T>) -> Result<T, UnknownStored> {
-        let value = storage_mut(self, stored)?.remove(stored)?;
-
-        Ok(value)
+        storage_mut(self, stored)?.remove(stored)
     }
 }
 
