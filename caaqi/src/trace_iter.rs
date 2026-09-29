@@ -13,7 +13,7 @@
 
 use crate::{
     context::Context,
-    raw::trace::{NodeKey, TraceExt, UnknownNode},
+    trace::{NodeKey, TraceExt, UnknownNode},
 };
 
 /// A walk over a node and its descendants, each before its own descendants.
@@ -143,7 +143,7 @@ fn children_first(
 }
 
 /// Walks over the trace. The single steps (`parent`, `children`, `prev`,
-/// `next`) are on [`NodeRef`](crate::raw::trace::NodeRef), from
+/// `next`) are on [`NodeRef`](crate::trace::NodeRef), from
 /// [`TraceExt::node`].
 pub trait TraceIterExt {
     /// Walks up from the parent of `key` to its root.

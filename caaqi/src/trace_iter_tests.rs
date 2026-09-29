@@ -158,7 +158,7 @@ fn leaf_subtree_is_just_the_leaf() {
 /// `trace.rs`, through its public API only.
 #[gtest]
 fn handles_can_be_extended() {
-    use crate::raw::trace::NodeRef;
+    use crate::trace::NodeRef;
 
     trait Label {
         fn label(&self) -> String;

@@ -2,8 +2,8 @@
 //! runner.
 //!
 //! The trace is a forest. Each node has at most one parent, any number of
-//! children, and a [`Runner`], the code that runs it. Nodes are also linked
-//! in trace order, parents before their children (see [`Trace`]).
+//! children, and a [`RunnerWithNode`], the code that runs it. Nodes are also
+//! linked in trace order, parents before their children (see [`Trace`]).
 //!
 //! [`TraceExt`] creates nodes and hands out handles to them, like bevy's
 //! `EntityRef` / `EntityWorldMut`: [`NodeRef`] for reads and [`NodeMut`] for
@@ -18,7 +18,7 @@
 //! [`NodeMut::context_mut`].
 //!
 //! Multi-step walks over the trace are in
-//! [`trace_iter`](crate::raw::trace_iter).
+//! [`trace_iter`](crate::trace_iter).
 
 use std::panic::{self, AssertUnwindSafe};
 
@@ -36,11 +36,14 @@ new_key_type! {
 /// The code that runs a node, given to [`TraceExt::create_node`] and called
 /// by [`NodeMut::run`] with the node's key. Closures taking
 /// `(&mut Context, NodeKey)` are runners.
-pub trait Runner: 'static {
+///
+/// For code that doesn't take the node's key, see
+/// [`current::Runner`](crate::current::Runner).
+pub trait RunnerWithNode: 'static {
     fn run(&mut self, ctx: &mut Context, node: NodeKey);
 }
 
-impl<F: FnMut(&mut Context, NodeKey) + 'static> Runner for F {
+impl<F: FnMut(&mut Context, NodeKey) + 'static> RunnerWithNode for F {
     fn run(&mut self, ctx: &mut Context, node: NodeKey) {
         self(ctx, node)
     }
@@ -155,7 +158,7 @@ pub enum DeleteError {
 ///
 /// # Running
 ///
-/// Every node has a [`Runner`], the code that runs it, called by
+/// Every node has a [`RunnerWithNode`], the code that runs it, called by
 /// [`run`](NodeMut::run). A running node can't be run again or deleted.
 /// Undoing what a run did is left to layers built on top of the trace.
 #[derive(Default)]
@@ -169,7 +172,7 @@ struct Node {
     prev: Option<NodeKey>,
     next: Option<NodeKey>,
     /// `None` only while the runner is taken out to run.
-    runner: Option<Box<dyn Runner>>,
+    runner: Option<Box<dyn RunnerWithNode>>,
 }
 
 impl Trace {
@@ -238,7 +241,7 @@ impl Trace {
     }
 
     /// Adds an unparented node without children, alone in its own order.
-    fn insert_root(&mut self, runner: Box<dyn Runner>) -> NodeKey {
+    fn insert_root(&mut self, runner: Box<dyn RunnerWithNode>) -> NodeKey {
         self.nodes.insert(Node {
             children: SmallVec::new(),
             parent: None,
@@ -249,7 +252,7 @@ impl Trace {
     }
 
     /// Takes `key`'s runner out to run it. `key` must be in the trace.
-    fn take_runner(&mut self, key: NodeKey) -> Result<Box<dyn Runner>, RunnerInUse> {
+    fn take_runner(&mut self, key: NodeKey) -> Result<Box<dyn RunnerWithNode>, RunnerInUse> {
         self.nodes
             .get_mut(key)
             .expect("the handle's node is in the trace")
@@ -259,7 +262,7 @@ impl Trace {
     }
 
     /// Puts back the runner [`take_runner`](Self::take_runner) took out.
-    fn put_runner(&mut self, key: NodeKey, runner: Box<dyn Runner>) {
+    fn put_runner(&mut self, key: NodeKey, runner: Box<dyn RunnerWithNode>) {
         self.nodes
             .get_mut(key)
             .expect("a running node can't be deleted")
@@ -601,7 +604,7 @@ pub trait TraceExt {
     /// children. It's a root until attached with
     /// [`set_parent`](NodeMut::set_parent) or
     /// [`add_child`](NodeMut::add_child), alone in its own trace order.
-    fn create_node(&mut self, runner: impl Runner) -> NodeMut<'_>;
+    fn create_node(&mut self, runner: impl RunnerWithNode) -> NodeMut<'_>;
 }
 
 impl TraceExt for Context {
@@ -623,7 +626,7 @@ impl TraceExt for Context {
         Ok(NodeMut { ctx: self, key })
     }
 
-    fn create_node(&mut self, runner: impl Runner) -> NodeMut<'_> {
+    fn create_node(&mut self, runner: impl RunnerWithNode) -> NodeMut<'_> {
         let key = trace_mut(self).insert_root(Box::new(runner));
         NodeMut { ctx: self, key }
     }

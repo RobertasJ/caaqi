@@ -32,10 +32,8 @@ use slotmap::SecondaryMap;
 use crate::{
     context::Context,
     id::Id,
-    raw::{
-        rewind::{RewindExt, RewindKey},
-        trace::{NodeKey, TraceExt, UnknownNode},
-    },
+    rewind::{RewindExt, RewindKey},
+    trace::{NodeKey, TraceExt, UnknownNode},
 };
 
 /// A group, created by [`GroupingExt::create_group`]. Ids are unique across
@@ -284,7 +282,7 @@ impl GroupingExt for Context {
     ) -> Result<RewindKey, AddToGroupError> {
         self.add_to_group(group, node)?;
         let rewind = self
-            .register_rewind(node, move |ctx, _| {
+            .register_rewind(node, move |ctx: &mut Context, _| {
                 // `Ok(false)`: the membership was already removed.
                 // `Err(UnknownGroup)`: the group was removed, taking the
                 // membership with it.

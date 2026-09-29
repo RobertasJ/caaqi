@@ -32,7 +32,7 @@ fn rewind_runs_every_rewind_once() {
     let node = ctx.create_node(noop).id();
     let keys: Vec<_> = (0..5)
         .map(|i| {
-            ctx.register_rewind(node, move |ctx, _| log(ctx, i))
+            ctx.register_rewind(node, move |ctx: &mut Context, _| log(ctx, i))
                 .unwrap()
         })
         .collect();
@@ -55,9 +55,9 @@ fn rewinds_registered_during_rewind_are_left_registered() {
     let mut ctx = Context::new();
     let node = ctx.create_node(noop).id();
     for i in 0..3 {
-        ctx.register_rewind(node, move |ctx, _| {
+        ctx.register_rewind(node, move |ctx: &mut Context, _| {
             log(ctx, i);
-            ctx.register_rewind(node, move |ctx, _| log(ctx, format!("late {i}")))
+            ctx.register_rewind(node, move |ctx: &mut Context, _| log(ctx, format!("late {i}")))
                 .unwrap();
         })
         .unwrap();
@@ -88,7 +88,7 @@ fn a_rewind_gets_its_own_key_which_is_stale_afterwards() {
     let mut ctx = Context::new();
     let node = ctx.create_node(noop).id();
     let key = ctx
-        .register_rewind(node, move |ctx, key| {
+        .register_rewind(node, move |ctx: &mut Context, key| {
             let seen = Seen {
                 key,
                 node: ctx.rewind_node_of(key),
@@ -118,7 +118,7 @@ fn rewind_order_varies_in_debug_builds() {
             let mut ctx = Context::new();
             let node = ctx.create_node(noop).id();
             for i in 0..8 {
-                ctx.register_rewind(node, move |ctx, _| log(ctx, i))
+                ctx.register_rewind(node, move |ctx: &mut Context, _| log(ctx, i))
                     .unwrap();
             }
             ctx.rewind(node).unwrap();
@@ -135,9 +135,9 @@ fn run_rewind_on_a_sibling_runs_it_first_and_only_once() {
         let mut ctx = Context::new();
         let node = ctx.create_node(noop).id();
         let inner = ctx
-            .register_rewind(node, |ctx, _| log(ctx, "inner"))
+            .register_rewind(node, |ctx: &mut Context, _| log(ctx, "inner"))
             .unwrap();
-        ctx.register_rewind(node, move |ctx, _| {
+        ctx.register_rewind(node, move |ctx: &mut Context, _| {
             let inner_ran = !logged(ctx).is_empty();
             expect_eq!(ctx.run_rewind(inner), !inner_ran);
             expect_eq!(logged(ctx), ["inner"]);
@@ -157,10 +157,10 @@ fn rewinding_its_own_node_runs_the_others_first() {
         let mut ctx = Context::new();
         let node = ctx.create_node(noop).id();
         for i in 0..3 {
-            ctx.register_rewind(node, move |ctx, _| log(ctx, i))
+            ctx.register_rewind(node, move |ctx: &mut Context, _| log(ctx, i))
                 .unwrap();
         }
-        ctx.register_rewind(node, move |ctx, _| {
+        ctx.register_rewind(node, move |ctx: &mut Context, _| {
             ctx.rewind(node).unwrap();
             log(ctx, "last");
         })
@@ -179,11 +179,11 @@ fn a_rewind_can_rewind_another_node() {
     let mut ctx = Context::new();
     let other = ctx.create_node(noop).id();
     for i in 0..3 {
-        ctx.register_rewind(other, move |ctx, _| log(ctx, i))
+        ctx.register_rewind(other, move |ctx: &mut Context, _| log(ctx, i))
             .unwrap();
     }
     let node = ctx.create_node(noop).id();
-    ctx.register_rewind(node, move |ctx, _| {
+    ctx.register_rewind(node, move |ctx: &mut Context, _| {
         ctx.rewind(other).unwrap();
         log(ctx, "outer");
     })
@@ -202,10 +202,10 @@ fn a_panicking_rewind_is_removed_and_the_rest_stay_registered() {
     let mut ctx = Context::new();
     let node = ctx.create_node(noop).id();
     let panicking = ctx
-        .register_rewind(node, |_, _| panic!("the rewind panics"))
+        .register_rewind(node, |_: &mut Context, _| panic!("the rewind panics"))
         .unwrap();
     for i in 0..4 {
-        ctx.register_rewind(node, move |ctx, _| log(ctx, i))
+        ctx.register_rewind(node, move |ctx: &mut Context, _| log(ctx, i))
             .unwrap();
     }
 
@@ -225,9 +225,9 @@ fn a_rewind_can_delete_its_own_node() {
     let mut ctx = Context::new();
     let node = ctx.create_node(noop).id();
     let first = ctx
-        .register_rewind(node, |ctx, _| log(ctx, "first"))
+        .register_rewind(node, |ctx: &mut Context, _| log(ctx, "first"))
         .unwrap();
-    ctx.register_rewind(node, move |ctx, _| {
+    ctx.register_rewind(node, move |ctx: &mut Context, _| {
         ctx.run_rewind(first);
         ctx.node_mut(node).unwrap().delete().unwrap();
         log(ctx, "deleted");
@@ -246,7 +246,7 @@ fn a_node_with_rewinds_can_run() {
         .create_node(|ctx: &mut Context, _: NodeKey| log(ctx, "ran"))
         .id();
     let key = ctx
-        .register_rewind(node, |ctx, _| log(ctx, "rewound"))
+        .register_rewind(node, |ctx: &mut Context, _| log(ctx, "rewound"))
         .unwrap();
 
     expect_eq!(ctx.node_mut(node).unwrap().run(), Ok(()));
@@ -259,7 +259,7 @@ fn a_node_with_rewinds_can_be_deleted() {
     let mut ctx = Context::new();
     let node = ctx.create_node(noop).id();
     let key = ctx
-        .register_rewind(node, |ctx, _| log(ctx, "rewound"))
+        .register_rewind(node, |ctx: &mut Context, _| log(ctx, "rewound"))
         .unwrap();
 
     expect_eq!(ctx.node_mut(node).unwrap().delete(), Ok(()));
@@ -276,7 +276,7 @@ fn unknown_nodes_are_refused() {
     ctx.node_mut(node).unwrap().delete().unwrap();
 
     expect_that!(
-        ctx.register_rewind(node, |_, _| {}).err(),
+        ctx.register_rewind(node, |_: &mut Context, _| {}).err(),
         some(eq(UnknownNode(node)))
     );
     expect_that!(ctx.rewind_keys(node).err(), some(eq(UnknownNode(node))));

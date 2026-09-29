@@ -1,7 +1,7 @@
 use googletest::prelude::*;
 
 use super::*;
-use crate::raw::trace::{DeleteError, RunnerInUse};
+use crate::trace::{DeleteError, RunnerInUse};
 
 /// A runner for nodes whose runs don't matter.
 fn noop(_: &mut Context, _: NodeKey) {}

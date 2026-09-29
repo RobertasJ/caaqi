@@ -1,7 +1,8 @@
 //! Rewinds: code registered on a node to undo what its run did, built only on
 //! the trace's public API.
 //!
-//! A rewind is an `FnOnce(&mut Context, RewindKey)` registered on a node with
+//! A rewind is a [`RewindWithKey`], such as an `FnOnce(&mut Context,
+//! RewindKey)` closure, registered on a node with
 //! [`register_rewind`](RewindExt::register_rewind), and run by
 //! [`rewind`](RewindExt::rewind) (all of a node's rewinds) or
 //! [`run_rewind`](RewindExt::run_rewind) (one, by key). Each runs at most
@@ -43,7 +44,7 @@ use smallvec::SmallVec;
 
 use crate::{
     context::Context,
-    raw::trace::{NodeKey, TraceExt, UnknownNode},
+    trace::{NodeKey, TraceExt, UnknownNode},
 };
 
 new_key_type! {
@@ -52,12 +53,26 @@ new_key_type! {
     pub struct RewindKey;
 }
 
-type Rewind = Box<dyn FnOnce(&mut Context, RewindKey)>;
+/// Code registered on a node with [`RewindExt::register_rewind`] and run
+/// once, with its own key, to undo what the node's run did. Closures taking
+/// `(&mut Context, RewindKey)` are rewinds.
+///
+/// For code that doesn't take the rewind's key, see
+/// [`current::Rewind`](crate::current::Rewind).
+pub trait RewindWithKey: 'static {
+    fn rewind(self: Box<Self>, ctx: &mut Context, key: RewindKey);
+}
+
+impl<F: FnOnce(&mut Context, RewindKey) + 'static> RewindWithKey for F {
+    fn rewind(self: Box<Self>, ctx: &mut Context, key: RewindKey) {
+        (*self)(ctx, key)
+    }
+}
 
 struct RewindEntry {
     node: NodeKey,
     /// `None` while the rewind runs.
-    rewind: Option<Rewind>,
+    rewind: Option<Box<dyn RewindWithKey>>,
 }
 
 /// The rewinds resource: every registered rewind that hasn't finished
@@ -104,7 +119,7 @@ impl Shuffle {
 
 impl Rewinds {
     /// Registers `rewind` on `node`, which must be in the trace.
-    fn insert(&mut self, node: NodeKey, rewind: Rewind) -> RewindKey {
+    fn insert(&mut self, node: NodeKey, rewind: Box<dyn RewindWithKey>) -> RewindKey {
         let key = self.entries.insert(RewindEntry {
             node,
             rewind: Some(rewind),
@@ -119,7 +134,7 @@ impl Rewinds {
 
     /// Takes the closure of `key` out to run it, leaving its entry in place.
     /// Returns `None` if it's gone or already running.
-    fn take(&mut self, key: RewindKey) -> Option<Rewind> {
+    fn take(&mut self, key: RewindKey) -> Option<Box<dyn RewindWithKey>> {
         self.entries.get_mut(key)?.rewind.take()
     }
 
@@ -171,7 +186,7 @@ pub trait RewindExt {
     fn register_rewind(
         &mut self,
         node: NodeKey,
-        f: impl FnOnce(&mut Context, RewindKey) + 'static,
+        f: impl RewindWithKey,
     ) -> Result<RewindKey, UnknownNode>;
 
     /// A snapshot of the keys of `node`'s rewinds, running ones included, in
@@ -219,7 +234,7 @@ impl RewindExt for Context {
     fn register_rewind(
         &mut self,
         node: NodeKey,
-        f: impl FnOnce(&mut Context, RewindKey) + 'static,
+        f: impl RewindWithKey,
     ) -> Result<RewindKey, UnknownNode> {
         self.node(node)?;
         Ok(rewinds_mut(self).insert(node, Box::new(f)))
@@ -255,7 +270,7 @@ impl RewindExt for Context {
             return false;
         };
         let guard = Remove(self, key);
-        rewind(&mut *guard.0, key);
+        rewind.rewind(&mut *guard.0, key);
         true
     }
 
