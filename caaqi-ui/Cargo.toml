@@ -1,0 +1,11 @@
+[package]
+name = "caaqi-ui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+caaqi.workspace = true
+pollster = "1.0.1"
+thiserror.workspace = true
+vello = "0.11"
+winit = "0.30"

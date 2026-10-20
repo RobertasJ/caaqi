@@ -13,7 +13,7 @@ Use `jj` instead of `git` for version-control operations, including status, diff
 Use the `justfile` recipes from the workspace root; fall back to direct Cargo only when no recipe fits. The Nix dev environment comes from `flake.nix` / `.envrc`.
 
 ```sh
-just run                    # cargo run — the scratch binary in src/main.rs
+just example <name>         # cargo run --example <name>, from examples/
 just test                   # cargo test -q -p caaqi --lib
 just test <name>            # run tests matching <name>
 just test <name> --pager    # same, piped through less -R
@@ -24,7 +24,8 @@ just update-state           # fetch, rebase @ onto main, keep working-copy conte
 ## Workspace Layout
 
 - `caaqi/` — the library crate (the actual product).
-- `src/main.rs` — the `caaqi-testing` binary, a scratch playground that exercises the library. It is not part of the library's API.
+- `caaqi-ui/` — a UI library built on `caaqi` (empty so far).
+- `examples/` — runnable examples of `caaqi` and `caaqi-ui`, in the root `caaqi-testing` package, which has no library or binary of its own.
 
 ## Architecture
 

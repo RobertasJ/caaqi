@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 slotmap = "1.1"
 smallvec = "1.16"
-thiserror = "2.0.21"
+thiserror.workspace = true
 
 [dev-dependencies]
 googletest = "0.14.3"

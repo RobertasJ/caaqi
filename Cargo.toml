@@ -4,11 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace]
-members = ["caaqi"]
+members = ["caaqi", "caaqi-ui"]
 
 [dependencies]
 caaqi.workspace = true
+caaqi-ui.workspace = true
 
 
 [workspace.dependencies]
 caaqi = { path = "caaqi" }
+caaqi-ui = { path = "caaqi-ui" }
+thiserror = "2.0.21"

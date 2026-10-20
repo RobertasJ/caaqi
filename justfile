@@ -1,6 +1,6 @@
 [default]
-run:
-    cargo run
+example name:
+    cargo run --example {{ name }}
 
 push:
     jj b m main

@@ -1,9 +1,8 @@
-//! A scratch playground that exercises caaqi. It isn't part of the library's
-//! API.
-//!
 //! A small app written with the prelude only: a root node mounts one child
 //! per item into a shared output list. Changing an item, rewinding the root
 //! and running it again replaces the old children with new ones.
+//!
+//! Run with `cargo run --example mount`.
 
 use std::{cell::RefCell, rc::Rc};
 
