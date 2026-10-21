@@ -3,7 +3,10 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use googletest::prelude::*;
 
 use super::*;
-use crate::{rewind::RewindExt, trace::TraceExt};
+use crate::{
+    rewind::{NodeRewindExt, RewindExt},
+    trace::TraceExt,
+};
 
 /// What `current_node` / `current_rewind` were, in the order they were read.
 #[derive(Default)]
@@ -15,7 +18,7 @@ struct Seen {
 fn see(ctx: &mut Context) {
     let node = ctx.current_node();
     let rewind = ctx.current_rewind();
-    let seen = ctx.get_or_insert_with(Seen::default);
+    let seen = ctx.get_or_default::<Seen>();
     seen.nodes.push(node);
     seen.rewinds.push(rewind);
 }
@@ -122,7 +125,7 @@ fn a_rewind_with_key_does_not_change_the_current_rewind() {
     ctx.register_rewind(node, |ctx: &mut Context, _| see(ctx))
         .unwrap();
 
-    ctx.rewind(node).unwrap();
+    ctx.node_mut(node).unwrap().rewind();
 
     expect_eq!(seen_rewinds(&ctx), [None]);
 }
@@ -152,7 +155,7 @@ fn a_rewind_run_inside_a_node_sees_both() {
             let node = ctx.current_node().unwrap();
             let rewind = ctx.register_rewind(node, WithCurrent(see)).unwrap();
             ctx.run_rewind(rewind);
-            let seen = ctx.get_or_insert_with(Seen::default);
+            let seen = ctx.get_or_default::<Seen>();
             assert_eq!(seen.rewinds, [Some(rewind)]);
         }))
         .id();

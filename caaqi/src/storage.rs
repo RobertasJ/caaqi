@@ -159,10 +159,7 @@ pub trait StorageExt {
 
 impl StorageExt for Context {
     fn store<T: 'static>(&mut self, value: T) -> Stored<T> {
-        let key = self
-            .get_or_insert_with(Storage::<T>::default)
-            .values
-            .insert(value);
+        let key = self.get_or_default::<Storage<T>>().values.insert(value);
         Stored {
             key,
             _marker: PhantomData,

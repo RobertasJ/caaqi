@@ -24,9 +24,9 @@
 //!
 //! A reference returned by the context borrows the whole context, so you
 //! can't keep it while calling another method that needs the context. Either
-//! let the reference go first, or take the value out with
-//! [`remove`](Context::remove), make the call, and put it back with
-//! [`insert`](Context::insert).
+//! let the reference go first, or use
+//! [`resource_scope`](Context::resource_scope), which takes the value out,
+//! hands you both, and puts it back.
 
 use std::{
     any::{Any, TypeId},
@@ -90,6 +90,12 @@ impl Context {
             .expect("data is keyed by its type")
     }
 
+    /// Returns the value of type `T` mutably. If there isn't one yet, it's
+    /// created with `T::default()` first.
+    pub fn get_or_default<T: Default + 'static>(&mut self) -> &mut T {
+        self.get_or_insert_with(T::default)
+    }
+
     /// Takes the value of type `T` out of the context and returns it, or
     /// returns `None` if there isn't one.
     pub fn remove<T: 'static>(&mut self) -> Option<T> {
@@ -97,4 +103,71 @@ impl Context {
             .remove(&TypeId::of::<T>())
             .map(|value| *value.downcast().expect("data is keyed by its type"))
     }
+
+    /// Takes the value of type `T` out, calls `f` with the context and the
+    /// value, and puts the value back, even if `f` panics. Returns what `f`
+    /// returns. This lets `f` change the value while also using the rest of
+    /// the context, which a reference from [`get_mut`](Self::get_mut)
+    /// wouldn't allow.
+    ///
+    /// While `f` runs, the context has no `T`: [`get`](Self::get) returns
+    /// `None`, and a nested `resource_scope` for `T` panics.
+    ///
+    /// # Panics
+    ///
+    /// If there's no value of type `T`; use
+    /// [`try_resource_scope`](Self::try_resource_scope) for an `Option`
+    /// instead. Also if `f` inserts a `T`, which would be overwritten.
+    #[track_caller]
+    pub fn resource_scope<T: 'static, U>(
+        &mut self,
+        f: impl FnOnce(&mut Context, &mut T) -> U,
+    ) -> U {
+        self.try_resource_scope(f).unwrap_or_else(|| {
+            panic!(
+                "no value of type {} for resource_scope",
+                std::any::type_name::<T>()
+            )
+        })
+    }
+
+    /// Like [`resource_scope`](Self::resource_scope), but returns `None`,
+    /// without calling `f`, if there's no value of type `T`.
+    pub fn try_resource_scope<T: 'static, U>(
+        &mut self,
+        f: impl FnOnce(&mut Context, &mut T) -> U,
+    ) -> Option<U> {
+        /// Puts the value back when dropped, so it's put back if `f` panics
+        /// too.
+        struct PutBack<'a, T: 'static> {
+            ctx: &'a mut Context,
+            value: Option<T>,
+        }
+
+        impl<T: 'static> Drop for PutBack<'_, T> {
+            fn drop(&mut self) {
+                let value = self.value.take().expect("only dropped once");
+                let inserted = self.ctx.insert(value).is_some();
+                // Panicking again while unwinding would abort.
+                if inserted && !std::thread::panicking() {
+                    panic!(
+                        "a value of type {} was inserted during its resource_scope",
+                        std::any::type_name::<T>()
+                    );
+                }
+            }
+        }
+
+        let value = self.remove::<T>()?;
+        let mut guard = PutBack {
+            ctx: self,
+            value: Some(value),
+        };
+        let value = guard.value.as_mut().expect("put back only on drop");
+        Some(f(&mut *guard.ctx, value))
+    }
 }
+
+#[cfg(test)]
+#[path = "context_tests.rs"]
+mod tests;

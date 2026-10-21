@@ -19,12 +19,21 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
+//! # Only a group's id reaches it
+//!
+//! Every operation on a group takes its [`GroupId`], and nothing returns the
+//! ids of groups you weren't given. Operations on a node's groups, like
+//! [`remove_from_all_groups`](GroupingExt::remove_from_all_groups), work on
+//! all of them without saying which they are. So whoever creates a group
+//! decides who can see and change it.
+//!
 //! # Deleted nodes stay in their groups
 //!
 //! Groups aren't told when a node is deleted, so a node stays in its groups
 //! until you remove it with
-//! [`remove_from_group`](GroupingExt::remove_from_group), or remove the
-//! group. Remove a node from its groups before you delete it.
+//! [`remove_from_group`](GroupingExt::remove_from_group) or
+//! [`remove_from_all_groups`](GroupingExt::remove_from_all_groups), or
+//! remove the group. Remove a node from its groups before you delete it.
 //!
 //! If you don't, [`group_members`](GroupingExt::group_members) and
 //! [`remove_group`](GroupingExt::remove_group) still return the deleted
@@ -98,8 +107,9 @@ impl Groups {
         Ok(self.group(group)?.iter().copied())
     }
 
-    fn groups_of(&self, node: NodeKey) -> impl Iterator<Item = GroupId> + '_ {
-        self.memberships.get(node).into_iter().flatten().copied()
+    /// How many groups `node`, which must be in the trace, is in.
+    fn count_of(&self, node: NodeKey) -> usize {
+        self.memberships.get(node).map_or(0, HashSet::len)
     }
 
     /// Adds `node`, which must be in the trace, to `group` in both
@@ -135,6 +145,23 @@ impl Groups {
         Ok(removed)
     }
 
+    /// Removes `node`, which must be in the trace, from every group it's in.
+    /// Returns how many groups that was.
+    fn remove_from_all(&mut self, node: NodeKey) -> usize {
+        let Some(groups) = self.memberships.remove(node) else {
+            return 0;
+        };
+        for &group in &groups {
+            let removed = self
+                .members
+                .get_mut(group)
+                .expect("memberships mirror members")
+                .remove(&node);
+            assert!(removed, "memberships mirror members");
+        }
+        groups.len()
+    }
+
     /// Removes `group` from the groups of `node`: the `memberships` half of
     /// [`remove_membership`](Self::remove_membership), for callers that have
     /// already updated `members`. Returns whether it was there, which it
@@ -150,10 +177,6 @@ impl Groups {
         }
         removed
     }
-}
-
-fn groups_mut(ctx: &mut Context) -> &mut Groups {
-    ctx.get_or_insert_with(Groups::default)
 }
 
 /// The groups resource, for a read about `group`. Without it no group exists
@@ -182,10 +205,11 @@ pub trait GroupingExt {
         group: GroupId,
     ) -> Result<impl Iterator<Item = NodeKey> + '_, UnknownGroup>;
 
-    /// The groups `node` is in, in no particular order.
+    /// How many groups `node` is in. It doesn't say which: only a group's
+    /// id reaches it.
     ///
     /// Fails if `node` isn't in the trace.
-    fn groups_of(&self, node: NodeKey) -> Result<impl Iterator<Item = GroupId> + '_, UnknownNode>;
+    fn group_count(&self, node: NodeKey) -> Result<usize, UnknownNode>;
 
     /// Creates an empty group and returns its id.
     fn create_group(&mut self) -> GroupId;
@@ -211,6 +235,14 @@ pub trait GroupingExt {
     /// that was deleted while still in a group. Fails only if `group` doesn't
     /// exist.
     fn remove_from_group(&mut self, group: GroupId, node: NodeKey) -> Result<bool, UnknownGroup>;
+
+    /// Removes `node` from every group it's in, and returns how many groups
+    /// that was. Call it before deleting a node.
+    ///
+    /// Fails if `node` isn't in the trace. A deleted node's key can only be
+    /// removed group by group, with
+    /// [`remove_from_group`](Self::remove_from_group).
+    fn remove_from_all_groups(&mut self, node: NodeKey) -> Result<usize, UnknownNode>;
 }
 
 impl GroupingExt for Context {
@@ -231,21 +263,23 @@ impl GroupingExt for Context {
         groups(self, group)?.members(group)
     }
 
-    fn groups_of(&self, node: NodeKey) -> Result<impl Iterator<Item = GroupId> + '_, UnknownNode> {
+    fn group_count(&self, node: NodeKey) -> Result<usize, UnknownNode> {
         // A deleted node's entry may be left behind, so check the node.
         self.node(node)?;
         Ok(self
             .get::<Groups>()
-            .into_iter()
-            .flat_map(move |groups| groups.groups_of(node)))
+            .map_or(0, |groups| groups.count_of(node)))
     }
 
     fn create_group(&mut self) -> GroupId {
-        groups_mut(self).members.insert(HashSet::new())
+        self.get_or_default::<Groups>()
+            .members
+            .insert(HashSet::new())
     }
 
     fn remove_group(&mut self, group: GroupId) -> Result<HashSet<NodeKey>, UnknownGroup> {
-        let members = groups_mut(self)
+        let members = self
+            .get_or_default::<Groups>()
             .members
             .remove(group)
             .ok_or(UnknownGroup(group))?;
@@ -253,7 +287,7 @@ impl GroupingExt for Context {
             .iter()
             .map(|&node| self.contains_node(node))
             .collect();
-        let groups = groups_mut(self);
+        let groups = self.get_or_default::<Groups>();
         for (&node, in_trace) in members.iter().zip(in_trace) {
             let unlinked = groups.unlink(node, group);
             assert!(unlinked || !in_trace, "memberships mirror members");
@@ -263,12 +297,20 @@ impl GroupingExt for Context {
 
     fn add_to_group(&mut self, group: GroupId, node: NodeKey) -> Result<bool, AddToGroupError> {
         self.node(node)?;
-        Ok(groups_mut(self).add_membership(group, node)?)
+        Ok(self
+            .get_or_default::<Groups>()
+            .add_membership(group, node)?)
     }
 
     fn remove_from_group(&mut self, group: GroupId, node: NodeKey) -> Result<bool, UnknownGroup> {
         let in_trace = self.contains_node(node);
-        groups_mut(self).remove_membership(group, node, in_trace)
+        self.get_or_default::<Groups>()
+            .remove_membership(group, node, in_trace)
+    }
+
+    fn remove_from_all_groups(&mut self, node: NodeKey) -> Result<usize, UnknownNode> {
+        self.node(node)?;
+        Ok(self.get_or_default::<Groups>().remove_from_all(node))
     }
 }
 

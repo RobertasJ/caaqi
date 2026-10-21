@@ -18,8 +18,13 @@ fn members(ctx: &Context, group: GroupId) -> HashSet<NodeKey> {
     ctx.group_members(group).unwrap().collect()
 }
 
+/// The groups `node` is in, read from `memberships`: nothing public says
+/// which groups a node is in.
 fn groups_of(ctx: &Context, node: NodeKey) -> HashSet<GroupId> {
-    ctx.groups_of(node).unwrap().collect()
+    ctx.get::<Groups>()
+        .and_then(|groups| groups.memberships.get(node))
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// Checks that `members` and `memberships` mirror each other exactly for
@@ -31,7 +36,10 @@ fn expect_consistent(ctx: &Context) {
     for (group, members) in &groups.members {
         for &node in members.iter().filter(|&&node| ctx.contains_node(node)) {
             expect_true!(
-                groups.groups_of(node).any(|member_of| member_of == group),
+                groups
+                    .memberships
+                    .get(node)
+                    .is_some_and(|member_of| member_of.contains(&group)),
                 "{node:?} records its membership of {group:?}",
             );
         }
@@ -305,7 +313,7 @@ fn deleted_members_stay_until_removed() {
         ctx.group_contains(group, deleted),
         err(eq(GroupContainsError::UnknownNode(UnknownNode(deleted))))
     );
-    expect_that!(ctx.groups_of(deleted).err(), some(eq(UnknownNode(deleted))));
+    expect_that!(ctx.group_count(deleted), err(eq(UnknownNode(deleted))));
 
     expect_that!(ctx.remove_from_group(group, deleted), ok(eq(true)));
     expect_that!(members(&ctx, group), { eq(&kept) });
@@ -359,4 +367,64 @@ fn refused_deletes_keep_memberships() {
 
     expect_that!(members(&ctx, group), { eq(&root) });
     expect_consistent(&ctx);
+}
+
+#[gtest]
+fn group_count_counts_without_naming_groups() {
+    let mut ctx = Context::new();
+    let node = node(&mut ctx);
+    expect_that!(ctx.group_count(node), ok(eq(0)));
+
+    let first = ctx.create_group();
+    let second = ctx.create_group();
+    ctx.add_to_group(first, node).unwrap();
+    ctx.add_to_group(second, node).unwrap();
+    expect_that!(ctx.group_count(node), ok(eq(2)));
+
+    ctx.remove_from_group(first, node).unwrap();
+    expect_that!(ctx.group_count(node), ok(eq(1)));
+}
+
+#[gtest]
+fn remove_from_all_groups_leaves_other_members() {
+    let mut ctx = Context::new();
+    let first = ctx.create_group();
+    let second = ctx.create_group();
+    let untouched = ctx.create_group();
+    let node = node(&mut ctx);
+    let other = self::node(&mut ctx);
+    ctx.add_to_group(first, node).unwrap();
+    ctx.add_to_group(second, node).unwrap();
+    ctx.add_to_group(second, other).unwrap();
+    ctx.add_to_group(untouched, other).unwrap();
+
+    expect_that!(ctx.remove_from_all_groups(node), ok(eq(2)));
+    expect_that!(groups_of(&ctx, node), is_empty());
+    expect_that!(members(&ctx, first), is_empty());
+    expect_that!(members(&ctx, second), { eq(&other) });
+    expect_that!(members(&ctx, untouched), { eq(&other) });
+    expect_that!(ctx.remove_from_all_groups(node), ok(eq(0)));
+    expect_consistent(&ctx);
+}
+
+#[gtest]
+fn remove_from_all_groups_rejects_deleted_nodes() {
+    let mut ctx = Context::new();
+    let group = ctx.create_group();
+    let deleted = node(&mut ctx);
+    ctx.add_to_group(group, deleted).unwrap();
+    delete(&mut ctx, deleted);
+
+    expect_that!(
+        ctx.remove_from_all_groups(deleted),
+        err(eq(UnknownNode(deleted)))
+    );
+    expect_that!(members(&ctx, group), { eq(&deleted) });
+}
+
+#[gtest]
+fn remove_from_all_groups_works_without_any_groups() {
+    let mut ctx = Context::new();
+    let node = node(&mut ctx);
+    expect_that!(ctx.remove_from_all_groups(node), ok(eq(0)));
 }

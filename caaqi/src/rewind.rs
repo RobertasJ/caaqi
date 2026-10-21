@@ -3,7 +3,8 @@
 //! When a node's run changes some state, it also registers a rewind on the
 //! node with [`register_rewind`](RewindExt::register_rewind): code that puts
 //! the state back. Before running the node again, call
-//! [`rewind`](RewindExt::rewind) on it, which runs all its rewinds. Each
+//! [`rewind`](NodeRewindExt::rewind) on its handle, which runs all its
+//! rewinds. Each
 //! rewind runs at most once.
 //!
 //! ```
@@ -22,7 +23,7 @@
 //!     .id();
 //!
 //! ctx.node_mut(node)?.run()?;
-//! ctx.rewind(node)?;
+//! ctx.node_mut(node)?.rewind();
 //! ctx.node_mut(node)?.run()?;
 //! assert_eq!(ctx.get::<Vec<&str>>().unwrap(), &["hello"]);
 //! # Ok::<(), Box<dyn std::error::Error>>(())
@@ -30,7 +31,7 @@
 //!
 //! # Order
 //!
-//! - The order in which [`rewind`](RewindExt::rewind) runs a node's rewinds
+//! - The order in which [`rewind`](NodeRewindExt::rewind) runs a node's rewinds
 //!   is unspecified, and your code must not depend on it. Debug builds
 //!   shuffle it on purpose, to catch code that does.
 //! - To run one rewind before another **on the same node**, have the later
@@ -58,6 +59,8 @@
 //! - Rewind a node before running it again. Otherwise its old rewinds pile
 //!   up alongside the new ones.
 //! - Rewind a node before deleting it. A deleted node's rewinds never run.
+//! - A rewind must not delete its own node: the handle that's rewinding it
+//!   may panic afterwards. Delete a node after rewinding it instead.
 //! - `rewind` only runs the rewinds that were registered when it started.
 //!   Rewinds registered on the node while it's rewinding stay registered
 //!   for the next `rewind`.
@@ -69,7 +72,7 @@ use smallvec::SmallVec;
 
 use crate::{
     context::Context,
-    trace::{NodeKey, TraceExt, UnknownNode},
+    trace::{NodeKey, NodeMut, TraceExt, UnknownNode},
 };
 
 new_key_type! {
@@ -108,13 +111,13 @@ struct RewindEntry {
 struct Rewinds {
     entries: SlotMap<RewindKey, RewindEntry>,
     by_node: SecondaryMap<NodeKey, SmallVec<[RewindKey; 2]>>,
-    /// Shuffles the order [`RewindExt::rewind`] runs rewinds in.
+    /// Shuffles the order [`NodeRewindExt::rewind`] runs rewinds in.
     #[cfg(debug_assertions)]
     shuffle: Shuffle,
 }
 
 /// A xorshift generator, seeded differently for every [`Rewinds`], so that
-/// code depending on the order [`RewindExt::rewind`] runs rewinds in fails in
+/// code depending on the order [`NodeRewindExt::rewind`] runs rewinds in fails in
 /// debug builds.
 #[cfg(debug_assertions)]
 struct Shuffle(u64);
@@ -196,10 +199,6 @@ impl Rewinds {
     }
 }
 
-fn rewinds_mut(ctx: &mut Context) -> &mut Rewinds {
-    ctx.get_or_insert_with(Rewinds::default)
-}
-
 /// Registering and running rewinds. See the [module docs](self) for an
 /// example and for the rules.
 pub trait RewindExt {
@@ -231,26 +230,10 @@ pub trait RewindExt {
     /// Use it to order rewinds **on the same node**: a rewind that must run
     /// after another calls `run_rewind` on that one first. Avoid using it on
     /// another node's rewinds, which leaves that node only partly rewound;
-    /// call [`rewind`](Self::rewind) on that node instead.
+    /// call [`rewind`](NodeRewindExt::rewind) on that node instead.
     ///
     /// The rewind is used up even if it panics.
     fn run_rewind(&mut self, key: RewindKey) -> bool;
-
-    /// Runs all of `node`'s rewinds, undoing what its runs did. Call it
-    /// before running the node again, and before deleting it.
-    ///
-    /// Only the rewinds registered when it starts are run. Rewinds registered
-    /// on `node` in the meantime stay registered. Rewinds that have already
-    /// run, or are running, by the time their turn comes are skipped.
-    ///
-    /// The order is unspecified, and your code must not depend on it: debug
-    /// builds shuffle it. See the [module docs](self#order) for how to order
-    /// rewinds.
-    ///
-    /// If a rewind panics, the panic is passed on, and the rewinds that
-    /// hadn't run yet stay registered; calling `rewind` again runs them.
-    /// Fails only if `node` isn't in the trace.
-    fn rewind(&mut self, node: NodeKey) -> Result<(), UnknownNode>;
 
     /// The node the rewind was registered on, or `None` once the rewind has
     /// finished running. While the rewind runs, this still returns its
@@ -269,7 +252,7 @@ impl RewindExt for Context {
         f: impl RewindWithKey,
     ) -> Result<RewindKey, UnknownNode> {
         self.node(node)?;
-        Ok(rewinds_mut(self).insert(node, Box::new(f)))
+        Ok(self.get_or_default::<Rewinds>().insert(node, Box::new(f)))
     }
 
     fn rewind_keys(
@@ -310,18 +293,45 @@ impl RewindExt for Context {
         true
     }
 
-    fn rewind(&mut self, node: NodeKey) -> Result<(), UnknownNode> {
-        let mut keys: Vec<_> = self.rewind_keys(node)?.collect();
-        rewinds_mut(self).shuffle(&mut keys);
-        for key in keys {
-            // `false` means something else already ran it, or it's running.
-            self.run_rewind(key);
-        }
-        Ok(())
-    }
-
     fn rewind_node_of(&self, key: RewindKey) -> Option<NodeKey> {
         Some(self.get::<Rewinds>()?.entries.get(key)?.node)
+    }
+}
+
+/// Rewinding a node through its handle.
+pub trait NodeRewindExt {
+    /// Runs all of the node's rewinds, undoing what its runs did. Call it
+    /// before running the node again, and before deleting it.
+    ///
+    /// The handle stays usable afterwards, for example to run the node
+    /// again, because a node's rewinds must not delete it.
+    ///
+    /// Only the rewinds registered when it starts are run. Rewinds registered
+    /// on the node in the meantime stay registered. Rewinds that have already
+    /// run, or are running, by the time their turn comes are skipped.
+    ///
+    /// The order is unspecified, and your code must not depend on it: debug
+    /// builds shuffle it. See the [module docs](self#order) for how to order
+    /// rewinds.
+    ///
+    /// If a rewind panics, the panic is passed on, and the rewinds that
+    /// hadn't run yet stay registered; calling `rewind` again runs them.
+    fn rewind(&mut self);
+}
+
+impl NodeRewindExt for NodeMut<'_> {
+    fn rewind(&mut self) {
+        let node = self.id();
+        let ctx = self.context_mut();
+        let mut keys: Vec<_> = ctx
+            .rewind_keys(node)
+            .expect("the handle's node is in the trace")
+            .collect();
+        ctx.get_or_default::<Rewinds>().shuffle(&mut keys);
+        for key in keys {
+            // `false` means something else already ran it, or it's running.
+            ctx.run_rewind(key);
+        }
     }
 }
 

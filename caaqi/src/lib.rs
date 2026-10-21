@@ -32,7 +32,7 @@
 //! assert_eq!(ctx.get::<Count>().unwrap().0, 1);
 //!
 //! // Rewind before rerunning, so the run's effect doesn't pile up.
-//! ctx.rewind(node)?;
+//! ctx.node_mut(node)?.rewind();
 //! ctx.node_mut(node)?.run()?;
 //! assert_eq!(ctx.get::<Count>().unwrap().0, 1);
 //! # Ok::<(), Box<dyn std::error::Error>>(())
@@ -73,7 +73,7 @@ pub mod prelude {
     pub use crate::{
         context::Context,
         current::{CurrentExt, Rewind, Runner, WithCurrent},
-        rewind::{RewindExt, RewindKey, RewindWithKey},
+        rewind::{NodeRewindExt, RewindExt, RewindKey, RewindWithKey},
         trace::{NodeKey, RunnerWithNode, TraceExt},
     };
 }

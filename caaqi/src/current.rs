@@ -26,7 +26,7 @@
 //!
 //! ctx.node_mut(node)?.run()?;
 //! assert_eq!(ctx.current_node(), None);
-//! ctx.rewind(node)?;
+//! ctx.node_mut(node)?.rewind();
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
@@ -105,7 +105,7 @@ impl Drop for Pop<'_> {
 
 impl<R: Runner> RunnerWithNode for WithCurrent<R> {
     fn run(&mut self, ctx: &mut Context, node: NodeKey) {
-        ctx.get_or_insert_with(Current::default).nodes.push(node);
+        ctx.get_or_default::<Current>().nodes.push(node);
         let guard = Pop {
             ctx,
             pop: |current| {
@@ -118,7 +118,7 @@ impl<R: Runner> RunnerWithNode for WithCurrent<R> {
 
 impl<R: Rewind> RewindWithKey for WithCurrent<R> {
     fn rewind(self: Box<Self>, ctx: &mut Context, key: RewindKey) {
-        ctx.get_or_insert_with(Current::default).rewinds.push(key);
+        ctx.get_or_default::<Current>().rewinds.push(key);
         let guard = Pop {
             ctx,
             pop: |current| {

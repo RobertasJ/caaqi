@@ -10,9 +10,7 @@ fn noop(_: &mut Context, _: NodeKey) {}
 struct Log(Vec<String>);
 
 fn log(ctx: &mut Context, entry: impl ToString) {
-    ctx.get_or_insert_with(Log::default)
-        .0
-        .push(entry.to_string());
+    ctx.get_or_default::<Log>().0.push(entry.to_string());
 }
 
 fn logged(ctx: &Context) -> Vec<String> {
@@ -344,4 +342,65 @@ fn a_panicking_runner_is_put_back() {
     expect_false!(ctx.node(key).unwrap().is_running());
     expect_eq!(ctx.node_mut(key).unwrap().run(), Ok(()));
     expect_eq!(logged(&ctx), ["ran", "ran"]);
+}
+
+#[gtest]
+fn cmp_nodes_follows_trace_order() {
+    let (ctx, root, _) = tree();
+    let order = tree_order(&ctx, root);
+    for (i, &a) in order.iter().enumerate() {
+        for (j, &b) in order.iter().enumerate() {
+            expect_eq!(ctx.cmp_nodes(a, b), Ok(i.cmp(&j)), "{a:?} vs {b:?}");
+        }
+    }
+}
+
+#[gtest]
+fn cmp_nodes_follows_moved_subtrees() {
+    let (mut ctx, root, [a, a1, _, _, b1]) = tree();
+    ctx.node_mut(a).unwrap().detach();
+    ctx.node_mut(a).unwrap().set_parent(root).unwrap();
+
+    expect_eq!(ctx.cmp_nodes(b1, a1), Ok(Ordering::Less));
+    let order = tree_order(&ctx, root);
+    for (i, &x) in order.iter().enumerate() {
+        for (j, &y) in order.iter().enumerate() {
+            expect_eq!(ctx.cmp_nodes(x, y), Ok(i.cmp(&j)), "{x:?} vs {y:?}");
+        }
+    }
+}
+
+#[gtest]
+fn cmp_nodes_refuses_different_trees() {
+    let (mut ctx, _, [a, ..]) = tree();
+    let other = ctx.create_node(noop).id();
+    let other_child = child(&mut ctx, other);
+
+    expect_eq!(
+        ctx.cmp_nodes(a, other_child),
+        Err(CmpNodesError::DifferentTrees(DifferentTrees {
+            a,
+            b: other_child
+        }))
+    );
+}
+
+#[gtest]
+fn cmp_nodes_refuses_unknown_nodes() {
+    let (mut ctx, _, [a, a1, ..]) = tree();
+    ctx.node_mut(a1).unwrap().delete().unwrap();
+
+    expect_eq!(
+        ctx.cmp_nodes(a, a1),
+        Err(CmpNodesError::UnknownNode(UnknownNode(a1)))
+    );
+    expect_eq!(
+        ctx.cmp_nodes(a1, a),
+        Err(CmpNodesError::UnknownNode(UnknownNode(a1)))
+    );
+    let empty = Context::new();
+    expect_eq!(
+        empty.cmp_nodes(a, a),
+        Err(CmpNodesError::UnknownNode(UnknownNode(a)))
+    );
 }

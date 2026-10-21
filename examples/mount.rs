@@ -36,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     report(&ctx, "run", &output, &created);
 
     items.borrow_mut()[1] = "B".into();
-    ctx.rewind(root)?;
+    ctx.node_mut(root)?.rewind();
     ctx.node_mut(root)?.run()?;
     report(&ctx, "rerun", &output, &created);
 
@@ -57,7 +57,7 @@ fn child(ctx: &mut Context, f: impl FnMut(&mut Context) + 'static) -> NodeKey {
     ctx.register_rewind(
         parent,
         WithCurrent(move |ctx: &mut Context| {
-            ctx.rewind(child).unwrap();
+            ctx.node_mut(child).unwrap().rewind();
             ctx.node_mut(child).unwrap().delete().unwrap();
         }),
     )

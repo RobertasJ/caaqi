@@ -55,7 +55,10 @@
 //! For walks over many nodes, such as all of a node's descendants, see
 //! [`trace_iter`](crate::trace_iter).
 
-use std::panic::{self, AssertUnwindSafe};
+use std::{
+    cmp::Ordering,
+    panic::{self, AssertUnwindSafe},
+};
 
 use slotmap::{SlotMap, new_key_type};
 use smallvec::SmallVec;
@@ -187,6 +190,24 @@ pub enum DeleteError {
     RunnerInUse(#[from] RunnerInUse),
     #[error(transparent)]
     HasChildren(#[from] HasChildren),
+}
+
+/// Returned by [`TraceExt::cmp_nodes`] for two nodes in different trees.
+/// Each tree has its own trace order, so they can't be compared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("nodes {a:?} and {b:?} are in different trees")]
+pub struct DifferentTrees {
+    pub a: NodeKey,
+    pub b: NodeKey,
+}
+
+/// Why [`TraceExt::cmp_nodes`] failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum CmpNodesError {
+    #[error(transparent)]
+    UnknownNode(#[from] UnknownNode),
+    #[error(transparent)]
+    DifferentTrees(#[from] DifferentTrees),
 }
 
 /// The trace resource: every node's links and runner. Everything public goes
@@ -424,10 +445,60 @@ impl Trace {
         self.link(node.prev, node.next);
         Ok(())
     }
-}
 
-fn trace_mut(ctx: &mut Context) -> &mut Trace {
-    ctx.get_or_insert_with(Trace::default)
+    /// `key` and its ancestors, root first. `key` must be in the trace.
+    fn path_from_root(&self, key: NodeKey) -> SmallVec<[NodeKey; 8]> {
+        let mut path: SmallVec<_> = std::iter::successors(Some(key), |&key| {
+            self.nodes
+                .get(key)
+                .expect("`key` and its ancestors are in the trace")
+                .parent
+        })
+        .collect();
+        path.reverse();
+        path
+    }
+
+    /// Compares `a` and `b` by trace order: below the deepest ancestor they
+    /// share, the branch that comes first among its children comes first. An
+    /// ancestor comes before its descendants.
+    fn cmp(&self, a: NodeKey, b: NodeKey) -> Result<Ordering, CmpNodesError> {
+        for key in [a, b] {
+            if !self.contains(key) {
+                return Err(UnknownNode(key).into());
+            }
+        }
+        let path_a = self.path_from_root(a);
+        let path_b = self.path_from_root(b);
+        if path_a[0] != path_b[0] {
+            return Err(DifferentTrees { a, b }.into());
+        }
+        let shared = path_a
+            .iter()
+            .zip(&path_b)
+            .take_while(|(x, y)| x == y)
+            .count();
+        Ok(match (path_a.get(shared), path_b.get(shared)) {
+            (None, None) => Ordering::Equal,
+            // `a` is an ancestor of `b`.
+            (None, Some(_)) => Ordering::Less,
+            (Some(_), None) => Ordering::Greater,
+            (Some(&branch_a), Some(&branch_b)) => {
+                let siblings = &self
+                    .nodes
+                    .get(path_a[shared - 1])
+                    .expect("a path's nodes are in the trace")
+                    .children;
+                let position = |branch| {
+                    siblings
+                        .iter()
+                        .position(|&child| child == branch)
+                        .expect("a node is among its parent's children")
+                };
+                position(branch_a).cmp(&position(branch_b))
+            }
+        })
+    }
 }
 
 /// A handle for reading a node, returned by [`TraceExt::node`].
@@ -626,11 +697,11 @@ impl NodeMut<'_> {
     ///
     /// Nothing else is told about the deletion, so anything kept for this
     /// node elsewhere stays behind. In particular,
-    /// [rewind](crate::rewind::RewindExt::rewind) the node before deleting
+    /// [rewind](crate::rewind::NodeRewindExt::rewind) the node before deleting
     /// it, or its rewinds never run.
     pub fn delete(self) -> Result<(), DeleteError> {
         let Self { ctx, key } = self;
-        trace_mut(ctx).remove_leaf(key)
+        ctx.get_or_default::<Trace>().remove_leaf(key)
     }
 }
 
@@ -656,6 +727,14 @@ pub trait TraceExt {
     /// [`add_child`](NodeMut::add_child). It doesn't run until you call
     /// [`run`](NodeMut::run).
     fn create_node(&mut self, runner: impl RunnerWithNode) -> NodeMut<'_>;
+
+    /// Compares two nodes by [trace order](self#trace-order): `Less` when `a`
+    /// comes before `b`. A node comes before its descendants, and a node's
+    /// earlier children's subtrees come before its later ones.
+    ///
+    /// Returns [`UnknownNode`] if either node isn't in the trace, or
+    /// [`DifferentTrees`] if they don't share a root.
+    fn cmp_nodes(&self, a: NodeKey, b: NodeKey) -> Result<Ordering, CmpNodesError>;
 }
 
 impl TraceExt for Context {
@@ -678,8 +757,12 @@ impl TraceExt for Context {
     }
 
     fn create_node(&mut self, runner: impl RunnerWithNode) -> NodeMut<'_> {
-        let key = trace_mut(self).insert_root(Box::new(runner));
+        let key = self.get_or_default::<Trace>().insert_root(Box::new(runner));
         NodeMut { ctx: self, key }
+    }
+
+    fn cmp_nodes(&self, a: NodeKey, b: NodeKey) -> Result<Ordering, CmpNodesError> {
+        self.get::<Trace>().ok_or(UnknownNode(a))?.cmp(a, b)
     }
 }
 

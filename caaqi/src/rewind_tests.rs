@@ -12,9 +12,7 @@ fn noop(_: &mut Context, _: NodeKey) {}
 struct Log(Vec<String>);
 
 fn log(ctx: &mut Context, entry: impl ToString) {
-    ctx.get_or_insert_with(Log::default)
-        .0
-        .push(entry.to_string());
+    ctx.get_or_default::<Log>().0.push(entry.to_string());
 }
 
 fn logged(ctx: &Context) -> Vec<String> {
@@ -41,12 +39,12 @@ fn rewind_runs_every_rewind_once() {
         sorted(keys.clone())
     );
 
-    ctx.rewind(node).unwrap();
+    ctx.node_mut(node).unwrap().rewind();
     expect_that!(
         ctx.rewind_keys(node).unwrap().collect::<Vec<_>>(),
         is_empty()
     );
-    ctx.rewind(node).unwrap();
+    ctx.node_mut(node).unwrap().rewind();
     expect_eq!(sorted(logged(&ctx)), ["0", "1", "2", "3", "4"]);
     for key in keys {
         expect_false!(ctx.run_rewind(key));
@@ -71,11 +69,11 @@ fn rewinds_registered_during_rewind_are_left_registered() {
         .unwrap();
     }
 
-    ctx.rewind(node).unwrap();
+    ctx.node_mut(node).unwrap().rewind();
     expect_eq!(sorted(logged(&ctx)), ["0", "1", "2"]);
     expect_that!(ctx.rewind_keys(node).unwrap().count(), eq(3));
 
-    ctx.rewind(node).unwrap();
+    ctx.node_mut(node).unwrap().rewind();
     expect_eq!(
         sorted(logged(&ctx)),
         ["0", "1", "2", "late 0", "late 1", "late 2"]
@@ -112,7 +110,7 @@ fn a_rewind_gets_its_own_key_which_is_stale_afterwards() {
         })
         .unwrap();
 
-    ctx.rewind(node).unwrap();
+    ctx.node_mut(node).unwrap().rewind();
     let seen = ctx.get::<Seen>().unwrap();
     expect_eq!(seen.key, key);
     expect_that!(seen.node, some(eq(node)));
@@ -134,7 +132,7 @@ fn rewind_order_varies_in_debug_builds() {
                 ctx.register_rewind(node, move |ctx: &mut Context, _| log(ctx, i))
                     .unwrap();
             }
-            ctx.rewind(node).unwrap();
+            ctx.node_mut(node).unwrap().rewind();
             logged(&ctx)
         })
         .collect();
@@ -159,7 +157,7 @@ fn run_rewind_on_a_sibling_runs_it_first_and_only_once() {
         })
         .unwrap();
 
-        ctx.rewind(node).unwrap();
+        ctx.node_mut(node).unwrap().rewind();
         expect_eq!(logged(&ctx), ["inner", "outer"]);
     }
 }
@@ -174,12 +172,12 @@ fn rewinding_its_own_node_runs_the_others_first() {
                 .unwrap();
         }
         ctx.register_rewind(node, move |ctx: &mut Context, _| {
-            ctx.rewind(node).unwrap();
+            ctx.node_mut(node).unwrap().rewind();
             log(ctx, "last");
         })
         .unwrap();
 
-        ctx.rewind(node).unwrap();
+        ctx.node_mut(node).unwrap().rewind();
         let log = logged(&ctx);
         let (last, others) = log.split_last().unwrap();
         expect_eq!(sorted(others.to_vec()), ["0", "1", "2"]);
@@ -197,12 +195,12 @@ fn a_rewind_can_rewind_another_node() {
     }
     let node = ctx.create_node(noop).id();
     ctx.register_rewind(node, move |ctx: &mut Context, _| {
-        ctx.rewind(other).unwrap();
+        ctx.node_mut(other).unwrap().rewind();
         log(ctx, "outer");
     })
     .unwrap();
 
-    ctx.rewind(node).unwrap();
+    ctx.node_mut(node).unwrap().rewind();
     expect_that!(
         ctx.rewind_keys(other).unwrap().collect::<Vec<_>>(),
         is_empty()
@@ -225,7 +223,7 @@ fn a_panicking_rewind_is_removed_and_the_rest_stay_registered() {
             .unwrap();
     }
 
-    let result = panic::catch_unwind(AssertUnwindSafe(|| ctx.rewind(node)));
+    let result = panic::catch_unwind(AssertUnwindSafe(|| ctx.node_mut(node).unwrap().rewind()));
     expect_true!(result.is_err());
     expect_that!(ctx.rewind_node_of(panicking), none());
     // The ones that didn't run before the panic are still registered.
@@ -234,7 +232,7 @@ fn a_panicking_rewind_is_removed_and_the_rest_stay_registered() {
         4 - logged(&ctx).len()
     );
 
-    ctx.rewind(node).unwrap();
+    ctx.node_mut(node).unwrap().rewind();
     expect_that!(
         ctx.rewind_keys(node).unwrap().collect::<Vec<_>>(),
         is_empty()
@@ -256,7 +254,7 @@ fn a_rewind_can_delete_its_own_node() {
     })
     .unwrap();
 
-    ctx.rewind(node).unwrap();
+    ctx.node_mut(node).unwrap().rewind();
     expect_false!(ctx.contains_node(node));
     expect_eq!(logged(&ctx), ["first", "deleted"]);
 }
@@ -302,5 +300,4 @@ fn unknown_nodes_are_refused() {
         some(eq(UnknownNode(node)))
     );
     expect_that!(ctx.rewind_keys(node).err(), some(eq(UnknownNode(node))));
-    expect_that!(ctx.rewind(node).err(), some(eq(UnknownNode(node))));
 }
