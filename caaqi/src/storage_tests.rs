@@ -9,13 +9,12 @@ fn stored_values_can_be_read_written_and_removed() {
     expect_that!(ctx.get_stored(stored), ok(eq("a")));
 
     ctx.get_stored_mut(stored).unwrap().push('b');
-    expect_that!(ctx.clone_stored(stored), ok(eq("ab")));
+    expect_that!(ctx.get_stored(stored), ok(eq("ab")));
 
     expect_that!(ctx.remove_stored(stored), ok(eq("ab")));
     let unknown = UnknownStored(stored.key);
     expect_eq!(ctx.get_stored(stored).unwrap_err(), unknown);
     expect_eq!(ctx.get_stored_mut(stored).unwrap_err(), unknown);
-    expect_eq!(ctx.clone_stored(stored).unwrap_err(), unknown);
     expect_eq!(ctx.remove_stored(stored).unwrap_err(), unknown);
 }
 

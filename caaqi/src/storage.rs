@@ -36,8 +36,7 @@ new_key_type! {
 /// A handle to a value of type `T`, returned by [`StorageExt::store`].
 ///
 /// Pass it to [`get_stored`](StorageExt::get_stored),
-/// [`get_stored_mut`](StorageExt::get_stored_mut),
-/// [`clone_stored`](StorageExt::clone_stored) or
+/// [`get_stored_mut`](StorageExt::get_stored_mut) or
 /// [`remove_stored`](StorageExt::remove_stored) to reach the value. Handles
 /// are `Copy`, and can be compared and hashed, whatever `T` is.
 pub struct Stored<T: 'static> {
@@ -143,13 +142,6 @@ pub trait StorageExt {
     /// Returns [`UnknownStored`] if the value was removed.
     fn get_stored_mut<T: 'static>(&mut self, stored: Stored<T>) -> Result<&mut T, UnknownStored>;
 
-    /// Returns a clone of the value. Useful when you need the value while
-    /// also changing the context, which a reference from
-    /// [`get_stored`](Self::get_stored) wouldn't allow.
-    ///
-    /// Returns [`UnknownStored`] if the value was removed.
-    fn clone_stored<T: Clone + 'static>(&self, stored: Stored<T>) -> Result<T, UnknownStored>;
-
     /// Takes the value out of the context and returns it. From then on,
     /// every use of `stored` (and of its copies) returns [`UnknownStored`].
     ///
@@ -172,10 +164,6 @@ impl StorageExt for Context {
 
     fn get_stored_mut<T: 'static>(&mut self, stored: Stored<T>) -> Result<&mut T, UnknownStored> {
         storage_mut(self, stored)?.get_mut(stored)
-    }
-
-    fn clone_stored<T: Clone + 'static>(&self, stored: Stored<T>) -> Result<T, UnknownStored> {
-        self.get_stored(stored).cloned()
     }
 
     fn remove_stored<T: 'static>(&mut self, stored: Stored<T>) -> Result<T, UnknownStored> {

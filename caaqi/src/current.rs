@@ -36,8 +36,8 @@
 
 use crate::{
     context::Context,
-    rewind::{RewindKey, RewindWithKey},
-    trace::{NodeKey, RunnerWithNode},
+    rewind::{RewindExt, RewindKey, RewindWithKey, UnknownRewind},
+    trace::{NodeKey, RunnerWithNode, TraceExt, UnknownNode},
 };
 
 /// The current resource: the keys of the running [`WithCurrent`] nodes and
@@ -105,27 +105,16 @@ impl Drop for Pop<'_> {
 
 impl<R: Runner> RunnerWithNode for WithCurrent<R> {
     fn run(&mut self, ctx: &mut Context, node: NodeKey) {
-        ctx.get_or_default::<Current>().nodes.push(node);
-        let guard = Pop {
-            ctx,
-            pop: |current| {
-                current.nodes.pop();
-            },
-        };
-        self.0.run(&mut *guard.ctx);
+        with_current_node(ctx, node, |ctx| self.0.run(ctx))
+            .expect("a running node is in the trace");
     }
 }
 
 impl<R: Rewind> RewindWithKey for WithCurrent<R> {
     fn rewind(self: Box<Self>, ctx: &mut Context, key: RewindKey) {
-        ctx.get_or_default::<Current>().rewinds.push(key);
-        let guard = Pop {
-            ctx,
-            pop: |current| {
-                current.rewinds.pop();
-            },
-        };
-        self.0.rewind(&mut *guard.ctx);
+        let inner = self.0;
+        with_current_rewind(ctx, key, |ctx| inner.rewind(ctx))
+            .expect("a running rewind is registered");
     }
 }
 
@@ -154,6 +143,50 @@ impl CurrentExt for Context {
     fn current_rewind(&self) -> Option<RewindKey> {
         self.get::<Current>()?.rewinds.last().copied()
     }
+}
+
+/// Makes `node` the current node while `f` runs, and returns what `f`
+/// returns: what [`WithCurrent`] does around a runner. The previous current
+/// node is current again afterwards, even if `f` panics.
+///
+/// Private, so only a node that is running can be current. Fails, without
+/// calling `f`, if `node` isn't in the trace.
+fn with_current_node<R>(
+    ctx: &mut Context,
+    node: NodeKey,
+    f: impl FnOnce(&mut Context) -> R,
+) -> Result<R, UnknownNode> {
+    ctx.node(node)?;
+    ctx.get_or_default::<Current>().nodes.push(node);
+    let guard = Pop {
+        ctx,
+        pop: |current| {
+            current.nodes.pop();
+        },
+    };
+    Ok(f(&mut *guard.ctx))
+}
+
+/// Makes `key` the current rewind while `f` runs, and returns what `f`
+/// returns: what [`WithCurrent`] does around a rewind. The previous current
+/// rewind is current again afterwards, even if `f` panics.
+///
+/// Fails, without calling `f`, if the rewind isn't registered (it has
+/// already run).
+fn with_current_rewind<R>(
+    ctx: &mut Context,
+    key: RewindKey,
+    f: impl FnOnce(&mut Context) -> R,
+) -> Result<R, UnknownRewind> {
+    ctx.rewind_node_of(key).ok_or(UnknownRewind(key))?;
+    ctx.get_or_default::<Current>().rewinds.push(key);
+    let guard = Pop {
+        ctx,
+        pop: |current| {
+            current.rewinds.pop();
+        },
+    };
+    Ok(f(&mut *guard.ctx))
 }
 
 #[cfg(test)]

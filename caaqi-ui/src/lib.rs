@@ -4,6 +4,7 @@
 
 pub mod cell;
 pub mod linear_executor;
+pub mod synced_array;
 pub mod tracked_cell;
 pub mod window;
 

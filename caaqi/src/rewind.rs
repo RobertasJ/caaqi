@@ -80,6 +80,12 @@ new_key_type! {
     pub struct RewindKey;
 }
 
+/// Returned when a [`RewindKey`] doesn't refer to a registered rewind,
+/// because the rewind has already run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("rewind {0:?} isn't registered")]
+pub struct UnknownRewind(pub RewindKey);
+
 /// Code that undoes what a node's run did. Register it on a node with
 /// [`RewindExt::register_rewind`]; it runs once, and is given its own key.
 ///

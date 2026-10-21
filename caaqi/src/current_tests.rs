@@ -164,3 +164,56 @@ fn a_rewind_run_inside_a_node_sees_both() {
 
     expect_eq!(seen_nodes(&ctx), [Some(node)]);
 }
+
+#[gtest]
+fn with_current_node_sets_it_for_the_closure() {
+    let mut ctx = Context::new();
+    let node = ctx.create_node(|_: &mut Context, _| {}).id();
+
+    let seen = with_current_node(&mut ctx, node, |ctx| ctx.current_node());
+    expect_eq!(seen, Ok(Some(node)));
+    expect_that!(ctx.current_node(), none());
+}
+
+#[gtest]
+fn with_current_node_refuses_unknown_nodes() {
+    let mut ctx = Context::new();
+    let node = ctx.create_node(|_: &mut Context, _| {}).id();
+    ctx.node_mut(node).unwrap().delete().unwrap();
+
+    let mut called = false;
+    expect_eq!(
+        with_current_node(&mut ctx, node, |_| called = true),
+        Err(UnknownNode(node))
+    );
+    expect_false!(called);
+}
+
+#[gtest]
+fn with_current_rewind_sets_it_and_refuses_finished_rewinds() {
+    let mut ctx = Context::new();
+    let node = ctx.create_node(|_: &mut Context, _| {}).id();
+    let rewind = ctx.register_rewind(node, |_: &mut Context, _| {}).unwrap();
+
+    let seen = with_current_rewind(&mut ctx, rewind, |ctx| ctx.current_rewind());
+    expect_eq!(seen, Ok(Some(rewind)));
+    expect_that!(ctx.current_rewind(), none());
+
+    ctx.run_rewind(rewind);
+    expect_eq!(
+        with_current_rewind(&mut ctx, rewind, |_| {}),
+        Err(UnknownRewind(rewind))
+    );
+}
+
+#[gtest]
+fn with_current_node_is_left_on_panic() {
+    let mut ctx = Context::new();
+    let node = ctx.create_node(|_: &mut Context, _| {}).id();
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let _ = with_current_node(&mut ctx, node, |_| panic!("the closure panics"));
+    }));
+    expect_true!(result.is_err());
+    expect_that!(ctx.current_node(), none());
+}
