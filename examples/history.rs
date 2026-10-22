@@ -33,8 +33,8 @@ fn main() {
             println!(
                 "{:indent$}step {number}: saw {seen}, left {left}, read {:?}, wrote {:?}",
                 "",
-                versions(step.reads()),
-                versions(step.writes()),
+                versions(stock, step.reads()),
+                versions(stock, step.writes()),
                 indent = depth * 2,
             );
         }
@@ -46,7 +46,12 @@ fn main() {
     });
 }
 
-/// Just the versions of the accesses: there's only one value.
-fn versions(accesses: Vec<Access>) -> Vec<u64> {
-    accesses.iter().map(|access| access.version).collect()
+/// The versions of `stock` among the accesses. The others are the results
+/// of steps, which are values too.
+fn versions(stock: Value<i32>, accesses: Vec<Access>) -> Vec<u64> {
+    accesses
+        .iter()
+        .filter(|access| access.value == stock.id())
+        .map(|access| access.version)
+        .collect()
 }

@@ -6,14 +6,15 @@ use crate::{time::times, value::create_value};
 #[test]
 fn run_step_returns_the_step_and_the_result() {
     scope(&mut Machine::new(), || {
-        let (step, result) = run_step(|| 7);
+        let (step, result) = run_step_with_id(|| 7);
 
-        assert_eq!(result, 7);
+        assert_eq!(result.get(), 7);
         assert!(step.exists());
         assert_eq!(step.parent(), None);
         assert!(!step.is_running());
         assert_eq!(steps(), [step]);
-        assert_eq!(times(), [step.start(), step.end().unwrap()]);
+        let created = result.history()[0].time;
+        assert_eq!(times(), [step.start(), step.end().unwrap(), created]);
     });
 }
 
@@ -21,10 +22,11 @@ fn run_step_returns_the_step_and_the_result() {
 fn a_running_step_is_current() {
     scope(&mut Machine::new(), || {
         assert_eq!(current_step(), None);
-        let (step, (current, running, end)) = run_step(|| {
+        let (step, inside) = run_step_with_id(|| {
             let current = current_step().unwrap();
             (current, current.is_running(), current.end())
         });
+        let (current, running, end) = inside.get();
 
         assert_eq!((current, running, end), (step, true, None));
         assert_eq!(current_step(), None);
@@ -34,7 +36,8 @@ fn a_running_step_is_current() {
 #[test]
 fn a_step_run_inside_another_is_inside_its_section() {
     scope(&mut Machine::new(), || {
-        let (outer, inner) = run_step(|| run_step(|| ()).0);
+        let (outer, inner) = run_step_with_id(|| run_step_with_id(|| ()).0);
+        let inner = inner.get();
 
         assert_eq!(inner.parent(), Some(outer));
         assert_eq!(steps(), [outer, inner]);
@@ -48,7 +51,7 @@ fn reads_and_writes_are_recorded_on_the_current_step() {
     scope(&mut Machine::new(), || {
         let a = create_value(1);
         let b = create_value(0);
-        let (step, ()) = run_step(|| b.set(a.get() + 1));
+        let (step, _) = run_step_with_id(|| b.set(a.get() + 1));
 
         assert_eq!(
             step.reads(),
@@ -70,7 +73,7 @@ fn reads_and_writes_are_recorded_on_the_current_step() {
 #[test]
 fn a_panicking_step_is_closed_and_the_machine_stays_in_scope() {
     scope(&mut Machine::new(), || {
-        let panicked = std::panic::catch_unwind(|| run_step(|| panic!("boom")));
+        let panicked = std::panic::catch_unwind(|| run_step_with_id(|| panic!("boom")));
 
         assert!(panicked.is_err());
         assert_eq!(current_step(), None);
@@ -85,8 +88,8 @@ fn a_panicking_step_is_closed_and_the_machine_stays_in_scope() {
 /// in that one's trace.
 fn foreign_step() -> Step {
     scope(&mut Machine::new(), || {
-        run_step(|| ());
-        run_step(|| ()).0
+        run_step_with_id(|| ());
+        run_step_with_id(|| ()).0
     })
 }
 
@@ -112,5 +115,13 @@ fn start_panics_on_an_unknown_step() {
     let unknown = foreign_step();
     scope(&mut Machine::new(), || {
         unknown.start();
+    });
+}
+
+#[test]
+fn run_step_returns_only_the_result() {
+    scope(&mut Machine::new(), || {
+        let step = run_step(current_step).get().expect("the step was current");
+        assert_eq!(steps(), [step]);
     });
 }

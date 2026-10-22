@@ -4,7 +4,9 @@
 //! use caaqi::prelude::*;
 //!
 //! scope(&mut Machine::new(), || {
-//!     let (outer, inner) = run_step(|| run_step(|| ()).0);
+//!     let (outer, inner) = run_step_with_id(|| run_step_with_id(|| ()).0);
+//!     // The step's result is a value.
+//!     let inner = inner.get();
 //!     assert_eq!(inner.parent(), Some(outer));
 //!     assert_eq!(steps(), [outer, inner]);
 //! });
@@ -16,6 +18,7 @@ use caaqi_core::trace::{Step as CoreStep, StepId};
 use crate::{
     machine::{scope, with_machine},
     time::Time,
+    value::Value,
 };
 
 /// A step of the machine's run. `Copy`.
@@ -38,16 +41,23 @@ impl From<Step> for StepId {
     }
 }
 
-/// Runs `f` as a new step, and returns the step with what `f` returned.
+/// Runs `f` as a new step, and returns a value holding what `f` returned.
+/// The value is created after the step's section closes. Inside `f`, the
+/// step is [`current_step`]; [`run_step_with_id`] also returns it.
 ///
 /// [`Machine::run_step`](caaqi_core::machine::Machine::run_step): the step
 /// starts at the end of the timeline, inside the innermost running step,
 /// and is current while `f` runs, so the values `f` reads and writes are
 /// recorded on it. `f` runs with the machine in scope.
-pub fn run_step<R>(f: impl FnOnce() -> R) -> (Step, R) {
+pub fn run_step<R: 'static>(f: impl FnOnce() -> R) -> Value<R> {
+    run_step_with_id(f).1
+}
+
+/// Like [`run_step`], but also returns the step.
+pub fn run_step_with_id<R: 'static>(f: impl FnOnce() -> R) -> (Step, Value<R>) {
     with_machine(|machine| {
-        let (step, result) = machine.run_step(|machine| scope(machine, f));
-        (Step(step), result)
+        let (step, result) = machine.run_step_with_id(|machine| scope(machine, f));
+        (Step(step), result.into())
     })
 }
 

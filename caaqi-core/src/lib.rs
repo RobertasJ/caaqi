@@ -12,10 +12,11 @@
 //! let mut machine = Machine::new();
 //! let name = machine.create_value(String::from("Ada"));
 //! let (greet, greeting) =
-//!     machine.run_step(|machine| format!("hello, {}", machine.read(name).unwrap()));
+//!     machine.run_step_with_id(|machine| format!("hello, {}", machine.read(name).unwrap()));
 //! machine.write(name, String::from("Grace")).unwrap();
 //!
-//! assert_eq!(greeting, "hello, Ada");
+//! // The step's result is a value too.
+//! assert_eq!(machine.read(greeting).unwrap(), "hello, Ada");
 //! let read: Vec<_> = machine.step(greet).unwrap().reads().collect();
 //! assert_eq!(read, [Access { value: name.id(), version: 0 }]);
 //! ```

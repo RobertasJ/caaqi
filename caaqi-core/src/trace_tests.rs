@@ -1,10 +1,16 @@
 use std::cmp::Ordering;
 
 use super::*;
+use crate::value::Value;
 
 /// Whether `a` comes before `b` on the machine's timeline.
 fn before(machine: &Machine, a: Time, b: Time) -> bool {
     machine.timeline().time_cmp(a, b).unwrap() == Ordering::Less
+}
+
+/// What `value` holds now.
+fn result<T: Copy + 'static>(machine: &mut Machine, value: Value<T>) -> T {
+    *machine.read(value).unwrap()
 }
 
 /// The step's start and end. Panics if it's still running.
@@ -16,9 +22,9 @@ fn section(machine: &Machine, step: StepId) -> (Time, Time) {
 #[test]
 fn run_step_returns_the_step_and_the_result() {
     let mut machine = Machine::new();
-    let (step, result) = machine.run_step(|_| 7);
+    let (step, seven) = machine.run_step_with_id(|_| 7);
 
-    assert_eq!(result, 7);
+    assert_eq!(machine.read(seven), Ok(&7));
     let recorded = machine.step(step).unwrap();
     assert_eq!(recorded.parent(), None);
     assert!(!recorded.is_running());
@@ -26,13 +32,14 @@ fn run_step_returns_the_step_and_the_result() {
 }
 
 #[test]
-fn an_empty_step_adds_its_start_and_end_to_the_timeline() {
+fn an_empty_step_adds_its_start_end_and_result_to_the_timeline() {
     let mut machine = Machine::new();
-    let (step, ()) = machine.run_step(|_| ());
+    let (step, unit) = machine.run_step_with_id(|_| ());
 
     let (start, end) = section(&machine, step);
+    let created = machine.history(unit).unwrap()[0].time();
     let times: Vec<_> = machine.timeline().times().collect();
-    assert_eq!(times, [start, end]);
+    assert_eq!(times, [start, end, created]);
 }
 
 #[test]
@@ -40,23 +47,24 @@ fn a_running_step_is_current_and_has_no_end() {
     let mut machine = Machine::new();
     assert_eq!(machine.current_step(), None);
 
-    let (step, inside) = machine.run_step(|machine| {
+    let (step, inside) = machine.run_step_with_id(|machine| {
         let current = machine.current_step().unwrap();
         let recorded = machine.step(current).unwrap();
         (current, recorded.is_running(), recorded.end())
     });
 
-    assert_eq!(inside, (step, true, None));
+    assert_eq!(result(&mut machine, inside), (step, true, None));
     assert_eq!(machine.current_step(), None);
 }
 
 #[test]
 fn a_step_run_inside_another_is_its_child_and_inside_its_section() {
     let mut machine = Machine::new();
-    let (outer, (inner, current_after)) = machine.run_step(|machine| {
-        let (inner, ()) = machine.run_step(|_| ());
+    let (outer, inside) = machine.run_step_with_id(|machine| {
+        let (inner, _) = machine.run_step_with_id(|_| ());
         (inner, machine.current_step())
     });
+    let (inner, current_after) = result(&mut machine, inside);
 
     assert_eq!(machine.step(inner).unwrap().parent(), Some(outer));
     assert_eq!(
@@ -75,11 +83,12 @@ fn a_step_run_inside_another_is_its_child_and_inside_its_section() {
 #[test]
 fn sibling_sections_follow_each_other() {
     let mut machine = Machine::new();
-    let (parent, (first, second)) = machine.run_step(|machine| {
-        let (first, ()) = machine.run_step(|_| ());
-        let (second, ()) = machine.run_step(|_| ());
+    let (parent, children) = machine.run_step_with_id(|machine| {
+        let (first, _) = machine.run_step_with_id(|_| ());
+        let (second, _) = machine.run_step_with_id(|_| ());
         (first, second)
     });
+    let (first, second) = result(&mut machine, children);
 
     assert_eq!(machine.step(first).unwrap().parent(), Some(parent));
     assert_eq!(machine.step(second).unwrap().parent(), Some(parent));
@@ -91,11 +100,12 @@ fn sibling_sections_follow_each_other() {
 #[test]
 fn steps_lists_every_step_in_timeline_order() {
     let mut machine = Machine::new();
-    let (a, (b, c)) = machine.run_step(|machine| {
-        let (b, c) = machine.run_step(|machine| machine.run_step(|_| ()).0);
-        (b, c)
+    let (a, inside_a) = machine.run_step_with_id(|machine| {
+        machine.run_step_with_id(|machine| machine.run_step_with_id(|_| ()).0)
     });
-    let (d, ()) = machine.run_step(|_| ());
+    let (b, inside_b) = result(&mut machine, inside_a);
+    let c = result(&mut machine, inside_b);
+    let (d, _) = machine.run_step_with_id(|_| ());
 
     assert_eq!(machine.steps().collect::<Vec<_>>(), [a, b, c, d]);
 }
@@ -105,9 +115,9 @@ fn a_panicking_step_is_closed() {
     let mut machine = Machine::new();
     let mut started = None;
     let panicked = catch_unwind(AssertUnwindSafe(|| {
-        machine.run_step(|machine| {
+        machine.run_step_with_id(|machine| {
             started = machine.current_step();
-            machine.run_step(|_| panic!("boom"));
+            machine.run_step_with_id(|_| panic!("boom"));
         })
     }));
 
@@ -115,7 +125,7 @@ fn a_panicking_step_is_closed() {
     assert_eq!(machine.current_step(), None);
     let outer = started.unwrap();
     assert!(!machine.step(outer).unwrap().is_running());
-    // Both steps closed: two starts and two ends.
+    // Both steps closed: two starts and two ends, and no results.
     assert_eq!(machine.timeline().len(), 4);
     for step in machine.steps().collect::<Vec<_>>() {
         assert!(!machine.step(step).unwrap().is_running());
@@ -128,15 +138,14 @@ fn reads_and_writes_are_recorded_on_the_innermost_step() {
     let a = machine.create_value(1);
     let b = machine.create_value(2);
 
-    let (outer, inner) = machine.run_step(|machine| {
+    let (outer, inside) = machine.run_step_with_id(|machine| {
         machine.read(a).unwrap();
-        machine
-            .run_step(|machine| {
-                machine.read(b).unwrap();
-                machine.write(a, 10).unwrap();
-            })
-            .0
+        machine.run_step_with_id(|machine| {
+            machine.read(b).unwrap();
+            machine.write(a, 10).unwrap();
+        })
     });
+    let (inner, inner_result) = result(&mut machine, inside);
 
     let outer = machine.step(outer).unwrap();
     let a0 = Access {
@@ -144,7 +153,13 @@ fn reads_and_writes_are_recorded_on_the_innermost_step() {
         version: 0,
     };
     assert_eq!(outer.reads().collect::<Vec<_>>(), [a0]);
-    assert_eq!(outer.writes().count(), 0);
+    // The inner step's result is created after its section closes, so it's
+    // recorded on the outer step.
+    let inner_result0 = Access {
+        value: inner_result.id(),
+        version: 0,
+    };
+    assert_eq!(outer.writes().collect::<Vec<_>>(), [inner_result0]);
 
     let inner = machine.step(inner).unwrap();
     let b0 = Access {
@@ -162,7 +177,16 @@ fn reads_and_writes_are_recorded_on_the_innermost_step() {
 #[test]
 fn an_unknown_step_fails() {
     let mut other = Machine::new();
-    let (step, ()) = other.run_step(|_| ());
+    let (step, _) = other.run_step_with_id(|_| ());
 
     assert_eq!(Machine::new().step(step).unwrap_err(), UnknownStep(step));
+}
+
+#[test]
+fn run_step_returns_only_the_result() {
+    let mut machine = Machine::new();
+    let inside = machine.run_step(|machine| machine.current_step());
+
+    let step = machine.read(inside).unwrap().expect("the step was current");
+    assert_eq!(machine.steps().collect::<Vec<_>>(), [step]);
 }

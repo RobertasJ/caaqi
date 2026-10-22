@@ -11,10 +11,11 @@
 //! let mut machine = Machine::new();
 //! scope(&mut machine, || {
 //!     let name = create_value(String::from("Ada"));
-//!     let (greet, greeting) = run_step(|| format!("hello, {}", name.get()));
+//!     let (greet, greeting) = run_step_with_id(|| format!("hello, {}", name.get()));
 //!     name.set(String::from("Grace"));
 //!
-//!     assert_eq!(greeting, "hello, Ada");
+//!     // The step's result is a value too.
+//!     assert_eq!(greeting.get(), "hello, Ada");
 //!     assert_eq!(greet.reads(), [Access { value: name.id(), version: 0 }]);
 //! });
 //! ```
@@ -29,7 +30,7 @@ pub mod prelude {
     pub use crate::{
         machine::{Machine, scope},
         time::Time,
-        trace::{Access, Step, current_step, run_step, steps},
+        trace::{Access, Step, current_step, run_step, run_step_with_id, steps},
         value::{Value, ValueId, create_value},
     };
 }

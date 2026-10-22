@@ -94,7 +94,7 @@ fn read_at_a_step_returns_what_it_saw() {
     let value = machine.create_value(0);
     let mut steps = Vec::new();
     for _ in 0..5 {
-        let (step, seen) = machine.run_step(|machine| {
+        let (step, seen) = machine.run_step_with_id(|machine| {
             let seen = *machine.read(value).unwrap();
             machine.write(value, seen + 1).unwrap();
             seen
@@ -103,6 +103,7 @@ fn read_at_a_step_returns_what_it_saw() {
     }
 
     for (step, seen) in steps {
+        let seen = *machine.read(seen).unwrap();
         let start = machine.step(step).unwrap().start();
         assert_eq!(machine.read_at(value, start), Ok(Some(&seen)));
         let end = machine.step(step).unwrap().end().unwrap();
@@ -114,7 +115,7 @@ fn read_at_a_step_returns_what_it_saw() {
 fn reads_and_writes_are_recorded_with_their_versions() {
     let mut machine = Machine::new();
     let value = machine.create_value(1);
-    let (step, ()) = machine.run_step(|machine| {
+    let (step, _) = machine.run_step_with_id(|machine| {
         machine.read(value).unwrap();
         machine.write(value, 2).unwrap();
         machine.read(value).unwrap();
@@ -129,7 +130,7 @@ fn reads_and_writes_are_recorded_with_their_versions() {
 fn update_records_a_read_of_the_version_it_copied() {
     let mut machine = Machine::new();
     let value = machine.create_value(1);
-    let (step, ()) = machine.run_step(|machine| {
+    let (step, _) = machine.run_step_with_id(|machine| {
         machine.update(value, |value| *value += 1).unwrap();
     });
 
@@ -141,7 +142,7 @@ fn update_records_a_read_of_the_version_it_copied() {
 fn reading_the_same_version_twice_records_it_once() {
     let mut machine = Machine::new();
     let value = machine.create_value(1);
-    let (step, ()) = machine.run_step(|machine| {
+    let (step, _) = machine.run_step_with_id(|machine| {
         machine.read(value).unwrap();
         machine.read(value).unwrap();
     });
@@ -152,7 +153,8 @@ fn reading_the_same_version_twice_records_it_once() {
 #[test]
 fn creating_a_value_in_a_step_records_a_write() {
     let mut machine = Machine::new();
-    let (step, value) = machine.run_step(|machine| machine.create_value(1));
+    let (step, value) = machine.run_step_with_id(|machine| machine.create_value(1));
+    let value = *machine.read(value).unwrap();
 
     assert_eq!(writes(&machine, step), [access(value, 0)]);
 }
@@ -165,7 +167,7 @@ fn read_at_records_the_version_it_returned() {
     let created = machine.history(value).unwrap()[0].time();
     machine.write(value, 2).unwrap();
 
-    let (step, ()) = machine.run_step(|machine| {
+    let (step, _) = machine.run_step_with_id(|machine| {
         machine.read_at(value, created).unwrap();
         // Before the value existed: nothing seen, nothing recorded.
         machine.read_at(value, early).unwrap();
@@ -178,7 +180,7 @@ fn read_at_records_the_version_it_returned() {
 fn inspecting_is_not_recorded() {
     let mut machine = Machine::new();
     let value = machine.create_value(1);
-    let (step, ()) = machine.run_step(|machine| {
+    let (step, _) = machine.run_step_with_id(|machine| {
         machine.version(value).unwrap();
         machine.history(value).unwrap();
     });
@@ -192,7 +194,7 @@ fn reads_and_writes_outside_steps_are_not_recorded() {
     let value = machine.create_value(1);
     machine.read(value).unwrap();
     machine.write(value, 2).unwrap();
-    let (step, ()) = machine.run_step(|_| ());
+    let (step, _) = machine.run_step_with_id(|_| ());
 
     assert_eq!(reads(&machine, step), []);
     assert_eq!(writes(&machine, step), []);

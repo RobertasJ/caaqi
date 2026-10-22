@@ -8,7 +8,7 @@
 //! use caaqi::prelude::*;
 //!
 //! scope(&mut Machine::new(), || {
-//!     let (step, ()) = run_step(|| ());
+//!     let (step, _) = run_step_with_id(|| ());
 //!     assert!(step.start() < step.end().unwrap());
 //! });
 //! ```

@@ -10,7 +10,8 @@
 //! use caaqi_core::prelude::*;
 //!
 //! let mut machine = Machine::new();
-//! let (outer, inner) = machine.run_step(|machine| machine.run_step(|_| ()).0);
+//! let (outer, inner) = machine.run_step_with_id(|machine| machine.run_step_with_id(|_| ()).0);
+//! let inner = *machine.read(inner).unwrap();
 //! assert_eq!(machine.step(inner).unwrap().parent(), Some(outer));
 //! assert_eq!(machine.steps().collect::<Vec<_>>(), [outer, inner]);
 //! ```
@@ -22,7 +23,11 @@ use std::{
 
 use slotmap::SlotMap;
 
-use crate::{machine::Machine, time::Time, value::ValueId};
+use crate::{
+    machine::Machine,
+    time::Time,
+    value::{Value, ValueId},
+};
 
 slotmap::new_key_type! {
     /// A step of a run. Only valid in the [`Machine`] that ran it: in
@@ -124,7 +129,10 @@ impl Trace {
 }
 
 impl Machine {
-    /// Runs `f` as a new step, and returns the step with what `f` returned.
+    /// Runs `f` as a new step, and returns a value holding what `f`
+    /// returned. Inside `f`, the step's id is
+    /// [`current_step`](Self::current_step);
+    /// [`run_step_with_id`](Self::run_step_with_id) also returns it.
     ///
     /// The step starts with a point at the end of the timeline, inside the
     /// section of the innermost running step, which becomes its parent.
@@ -132,8 +140,21 @@ impl Machine {
     /// values `f` reads and writes are recorded on it, and the steps it runs
     /// are inside its section. Then a last point closes the section.
     ///
-    /// If `f` panics, the section is closed before the panic carries on.
-    pub fn run_step<R>(&mut self, f: impl FnOnce(&mut Machine) -> R) -> (StepId, R) {
+    /// The result value is created after the section closes, so its point is
+    /// outside the section, and its creation is recorded as a write on the
+    /// parent step, if there is one.
+    ///
+    /// If `f` panics, the section is closed before the panic carries on, and
+    /// no result value is created.
+    pub fn run_step<R: 'static>(&mut self, f: impl FnOnce(&mut Machine) -> R) -> Value<R> {
+        self.run_step_with_id(f).1
+    }
+
+    /// Like [`run_step`](Self::run_step), but also returns the step's id.
+    pub fn run_step_with_id<R: 'static>(
+        &mut self,
+        f: impl FnOnce(&mut Machine) -> R,
+    ) -> (StepId, Value<R>) {
         let start = self.timeline.push_back();
         let trace = &mut self.trace;
         let step = trace.steps.insert(Step {
@@ -154,7 +175,7 @@ impl Machine {
         self.trace.steps[step].end = Some(end);
 
         match result {
-            Ok(value) => (step, value),
+            Ok(value) => (step, self.create_value(value)),
             Err(panic) => resume_unwind(panic),
         }
     }

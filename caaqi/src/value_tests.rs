@@ -4,7 +4,7 @@ use super::*;
 use crate::{
     machine::scope,
     time::last,
-    trace::{Access, run_step},
+    trace::{Access, run_step_with_id},
 };
 
 #[test]
@@ -49,7 +49,7 @@ fn get_at_returns_what_a_step_saw() {
         let value = create_value(0);
         let runs: Vec<_> = (0..3)
             .map(|_| {
-                run_step(|| {
+                run_step_with_id(|| {
                     let seen = value.get();
                     value.set(seen + 1);
                     seen
@@ -58,6 +58,7 @@ fn get_at_returns_what_a_step_saw() {
             .collect();
 
         for (step, seen) in runs {
+            let seen = seen.get();
             assert_eq!(value.get_at(step.start()), Some(seen));
             assert_eq!(value.get_at(step.end().unwrap()), Some(seen + 1));
         }
@@ -67,7 +68,7 @@ fn get_at_returns_what_a_step_saw() {
 #[test]
 fn get_at_before_creation_is_none() {
     scope(&mut Machine::new(), || {
-        let (step, ()) = run_step(|| ());
+        let (step, _) = run_step_with_id(|| ());
         let value = create_value(1);
 
         assert_eq!(value.get_at(step.start()), None);
@@ -78,7 +79,7 @@ fn get_at_before_creation_is_none() {
 fn reads_and_writes_are_recorded_on_the_current_step() {
     scope(&mut Machine::new(), || {
         let value = create_value(1);
-        let (step, ()) = run_step(|| {
+        let (step, _) = run_step_with_id(|| {
             value.with(|_| ());
             value.update(|value| *value += 1);
         });

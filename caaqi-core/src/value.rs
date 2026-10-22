@@ -19,7 +19,7 @@
 //!
 //! let mut machine = Machine::new();
 //! let count = machine.create_value(1);
-//! let (step, ()) = machine.run_step(|machine| {
+//! let (step, _) = machine.run_step_with_id(|machine| {
 //!     let doubled = *machine.read(count).unwrap() * 2;
 //!     machine.write(count, doubled).unwrap();
 //! });

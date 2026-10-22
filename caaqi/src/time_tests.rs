@@ -1,7 +1,7 @@
 use caaqi_core::machine::Machine;
 
 use super::*;
-use crate::{machine::scope, trace::run_step, value::create_value};
+use crate::{machine::scope, trace::run_step_with_id, value::create_value};
 
 /// A point from a machine with more points than the one in scope, so it
 /// isn't on that one's timeline.
@@ -29,13 +29,14 @@ fn a_new_timeline_is_empty() {
 #[test]
 fn the_timeline_follows_the_run() {
     scope(&mut Machine::new(), || {
-        let (step, ()) = run_step(|| ());
+        let (step, result) = run_step_with_id(|| ());
         let (start, end) = (step.start(), step.end().unwrap());
+        let created = result.history()[0].time;
 
-        assert_eq!(times(), [start, end]);
+        assert_eq!(times(), [start, end, created]);
         assert_eq!(first(), Some(start));
-        assert_eq!(last(), Some(end));
-        assert_eq!(len(), 2);
+        assert_eq!(last(), Some(created));
+        assert_eq!(len(), 3);
         assert!(!is_empty());
         assert!(start.exists());
     });
@@ -44,7 +45,7 @@ fn the_timeline_follows_the_run() {
 #[test]
 fn time_cmp_and_partial_ord_follow_the_timeline() {
     scope(&mut Machine::new(), || {
-        let (step, ()) = run_step(|| ());
+        let (step, _) = run_step_with_id(|| ());
         let (a, b) = (step.start(), step.end().unwrap());
 
         assert_eq!(a.time_cmp(b), Ordering::Less);
@@ -58,13 +59,15 @@ fn time_cmp_and_partial_ord_follow_the_timeline() {
 #[test]
 fn next_and_prev_step_along_the_timeline() {
     scope(&mut Machine::new(), || {
-        let (step, ()) = run_step(|| ());
+        let (step, result) = run_step_with_id(|| ());
         let (a, b) = (step.start(), step.end().unwrap());
+        let c = result.history()[0].time;
 
         assert_eq!(a.prev(), None);
         assert_eq!(a.next(), Some(b));
         assert_eq!(b.prev(), Some(a));
-        assert_eq!(b.next(), None);
+        assert_eq!(b.next(), Some(c));
+        assert_eq!(c.next(), None);
     });
 }
 

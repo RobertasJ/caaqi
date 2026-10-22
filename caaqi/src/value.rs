@@ -9,7 +9,7 @@
 //!
 //! scope(&mut Machine::new(), || {
 //!     let count = create_value(1);
-//!     let (step, ()) = run_step(|| count.set(count.get() * 2));
+//!     let (step, _) = run_step_with_id(|| count.set(count.get() * 2));
 //!
 //!     assert_eq!(count.get(), 2);
 //!     assert_eq!(count.get_at(step.start()), Some(1));
