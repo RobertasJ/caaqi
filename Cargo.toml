@@ -1,19 +1,9 @@
-[package]
-name = "caaqi-testing"
-version = "0.1.0"
-edition = "2024"
-
 [workspace]
-members = ["caaqi", "caaqi-scoped", "caaqi-ui"]
-
-[dependencies]
-caaqi.workspace = true
-caaqi-scoped.workspace = true
-caaqi-ui.workspace = true
-
+members = ["caaqi-core", "caaqi-core-scoped", "caaqi"]
+resolver = "3"
 
 [workspace.dependencies]
+caaqi-core = { path = "caaqi-core" }
+caaqi-core-scoped = { path = "caaqi-core-scoped" }
 caaqi = { path = "caaqi" }
-caaqi-scoped = { path = "caaqi-scoped" }
-caaqi-ui = { path = "caaqi-ui" }
 thiserror = "2.0.21"
