@@ -1,3 +1,14 @@
+# The root package holds only the top-level examples, in examples/.
+[package]
+name = "caaqi-examples"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+caaqi.workspace = true
+caaqi-core.workspace = true
+
 [workspace]
 members = ["caaqi-core", "caaqi"]
 resolver = "3"

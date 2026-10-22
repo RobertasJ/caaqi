@@ -5,4 +5,4 @@ edition = "2024"
 
 [dependencies]
 caaqi-core.workspace = true
-thiserror.workspace = true
+scoped-tls-hkt = "0.1"
