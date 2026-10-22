@@ -1,14 +1,22 @@
+//! Values kept in the context and borrowed like a `RefCell`.
+
 use std::{
     cell::{BorrowError, BorrowMutError, Ref, RefCell, RefMut},
     fmt, hash,
+    ops::{Deref, DerefMut},
+    rc::Rc,
 };
 
-use caaqi::{
-    context::Context,
-    storage::{StorageExt, Stored, UnknownStored},
-};
+use caaqi_scoped::storage::{Stored, UnknownStored, store};
 
-pub struct StoredCell<T: 'static>(Stored<RefCell<T>>);
+/// A handle to a value kept in the context, borrowed like a `RefCell`.
+/// `Copy` whatever `T` is.
+///
+/// A borrow shares the value out of the context, so it doesn't hold the
+/// context: while it's alive, caaqi-scoped's functions still work, other
+/// cells included. Conflicting borrows of the same cell fail as a
+/// `RefCell`'s do.
+pub struct StoredCell<T: 'static>(Stored<Rc<RefCell<T>>>);
 
 // Implemented by hand: deriving would require `T` to implement each trait.
 impl<T: 'static> Clone for StoredCell<T> {
@@ -39,6 +47,50 @@ impl<T: 'static> fmt::Debug for StoredCell<T> {
     }
 }
 
+/// A borrow of a [`StoredCell`]'s value, returned by
+/// [`borrow`](StoredCell::borrow). It keeps the cell alive, so it's
+/// `'static`, and derefs to the value.
+#[ouroboros::self_referencing]
+pub struct CellRef<T: 'static> {
+    cell: Rc<RefCell<T>>,
+    #[borrows(cell)]
+    #[covariant]
+    value: Ref<'this, T>,
+}
+
+impl<T: 'static> Deref for CellRef<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.borrow_value()
+    }
+}
+
+/// A mutable borrow of a [`StoredCell`]'s value, returned by
+/// [`borrow_mut`](StoredCell::borrow_mut). It keeps the cell alive, so it's
+/// `'static`, and derefs to the value.
+#[ouroboros::self_referencing]
+pub struct CellRefMut<T: 'static> {
+    cell: Rc<RefCell<T>>,
+    #[borrows(cell)]
+    #[covariant]
+    value: RefMut<'this, T>,
+}
+
+impl<T: 'static> Deref for CellRefMut<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.borrow_value()
+    }
+}
+
+impl<T: 'static> DerefMut for CellRefMut<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.with_value_mut(|value| &mut **value)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum BorrowCellError {
     #[error(transparent)]
@@ -55,61 +107,48 @@ pub enum BorrowCellMutError {
     BorrowMut(#[from] BorrowMutError),
 }
 
-pub trait CellExt {
-    fn store_cell<T: 'static>(&mut self, value: T) -> StoredCell<T>;
-
-    /// Like [`try_borrow_cell`](CellExt::try_borrow_cell), but panics on error.
-    fn borrow_cell<T: 'static>(&self, cell: StoredCell<T>) -> Ref<'_, T>;
-
-    fn try_borrow_cell<T: 'static>(
-        &self,
-        cell: StoredCell<T>,
-    ) -> Result<Ref<'_, T>, BorrowCellError>;
-
-    /// Like [`try_borrow_cell_mut`](CellExt::try_borrow_cell_mut), but panics on error.
-    fn borrow_cell_mut<T: 'static>(&self, cell: StoredCell<T>) -> RefMut<'_, T>;
-
-    fn try_borrow_cell_mut<T: 'static>(
-        &self,
-        cell: StoredCell<T>,
-    ) -> Result<RefMut<'_, T>, BorrowCellMutError>;
-
-    fn remove_cell<T: 'static>(&mut self, cell: StoredCell<T>) -> Result<T, UnknownStored>;
+/// Moves `value` into the context, in a cell.
+pub fn store_cell<T: 'static>(value: T) -> StoredCell<T> {
+    StoredCell(store(Rc::new(RefCell::new(value))))
 }
 
-impl CellExt for Context {
-    fn store_cell<T: 'static>(&mut self, value: T) -> StoredCell<T> {
-        StoredCell(self.store(RefCell::new(value)))
+impl<T: 'static> StoredCell<T> {
+    /// The cell, shared out of the context.
+    fn shared(self) -> Result<Rc<RefCell<T>>, UnknownStored> {
+        self.0.get(Rc::clone)
     }
 
+    /// Like [`try_borrow`](Self::try_borrow), but panics on error.
     #[track_caller]
-    fn borrow_cell<T: 'static>(&self, cell: StoredCell<T>) -> Ref<'_, T> {
-        self.try_borrow_cell(cell)
+    pub fn borrow(self) -> CellRef<T> {
+        self.try_borrow().unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    /// Borrows the value.
+    pub fn try_borrow(self) -> Result<CellRef<T>, BorrowCellError> {
+        Ok(CellRef::try_new(self.shared()?, |cell| cell.try_borrow())?)
+    }
+
+    /// Like [`try_borrow_mut`](Self::try_borrow_mut), but panics on error.
+    #[track_caller]
+    pub fn borrow_mut(self) -> CellRefMut<T> {
+        self.try_borrow_mut()
             .unwrap_or_else(|error| panic!("{error}"))
     }
 
-    fn try_borrow_cell<T: 'static>(
-        &self,
-        cell: StoredCell<T>,
-    ) -> Result<Ref<'_, T>, BorrowCellError> {
-        Ok(self.get_stored(cell.0)?.try_borrow()?)
+    /// Borrows the value mutably.
+    pub fn try_borrow_mut(self) -> Result<CellRefMut<T>, BorrowCellMutError> {
+        Ok(CellRefMut::try_new(self.shared()?, |cell| {
+            cell.try_borrow_mut()
+        })?)
     }
 
-    #[track_caller]
-    fn borrow_cell_mut<T: 'static>(&self, cell: StoredCell<T>) -> RefMut<'_, T> {
-        self.try_borrow_cell_mut(cell)
-            .unwrap_or_else(|error| panic!("{error}"))
-    }
-
-    fn try_borrow_cell_mut<T: 'static>(
-        &self,
-        cell: StoredCell<T>,
-    ) -> Result<RefMut<'_, T>, BorrowCellMutError> {
-        Ok(self.get_stored(cell.0)?.try_borrow_mut()?)
-    }
-
-    fn remove_cell<T: 'static>(&mut self, cell: StoredCell<T>) -> Result<T, UnknownStored> {
-        Ok(self.remove_stored(cell.0)?.into_inner())
+    /// Removes the cell from the context: from then on, borrowing it fails
+    /// with [`UnknownStored`]. Borrows made before stay valid, and the value
+    /// is dropped once the last of them ends.
+    pub fn remove(self) -> Result<(), UnknownStored> {
+        self.0.remove()?;
+        Ok(())
     }
 }
 

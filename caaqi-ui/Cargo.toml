@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-caaqi.workspace = true
+caaqi-scoped.workspace = true
+ouroboros = "0.18"
 pollster = "1.0.1"
 thiserror.workspace = true
 vello = "0.11"

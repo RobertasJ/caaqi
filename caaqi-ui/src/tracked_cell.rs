@@ -2,33 +2,29 @@
 //! they're written.
 //!
 //! A read from inside a running node (one wrapped in
-//! [`WithCurrent`](caaqi::current::WithCurrent)) adds the node to the cell's
-//! group, until the node is rewound. A write queues every node in the group
-//! with [`queue_execution`](LinearExecutorExt::queue_execution).
+//! [`WithCurrent`](caaqi_scoped::current::WithCurrent)) adds the node to the
+//! cell's group, until the node is rewound. A write queues every node in the
+//! group with [`queue_execution`].
 
-use std::{
-    cell::{Ref, RefMut},
-    fmt, hash,
-};
+use std::{fmt, hash};
 
-use caaqi::{
-    context::Context,
-    current::CurrentExt,
-    group::{GroupId, GroupingExt},
-    rewind::RewindExt,
+use caaqi_scoped::{
+    current::current_node,
+    group::{Group, create_group},
+    rewind::{RewindKey, register_rewind},
     storage::UnknownStored,
 };
 
 use crate::{
-    cell::{BorrowCellError, BorrowCellMutError, CellExt, StoredCell},
-    linear_executor::LinearExecutorExt,
+    cell::{BorrowCellError, BorrowCellMutError, CellRef, CellRefMut, StoredCell, store_cell},
+    linear_executor::queue_execution,
 };
 
 /// A handle to a cell whose readers are tracked. `Copy` whatever `T` is.
 pub struct TrackedCell<T: 'static> {
     cell: StoredCell<T>,
     /// The nodes that read the cell. It lives as long as the cell.
-    readers: GroupId,
+    readers: Group,
 }
 
 // Implemented by hand: deriving would require `T` to implement each trait.
@@ -63,107 +59,78 @@ impl<T: 'static> fmt::Debug for TrackedCell<T> {
     }
 }
 
-pub trait TrackedCellExt {
-    fn store_tracked_cell<T: 'static>(&mut self, value: T) -> TrackedCell<T>;
+/// Moves `value` into the context, in a cell whose readers are tracked.
+pub fn store_tracked_cell<T: 'static>(value: T) -> TrackedCell<T> {
+    TrackedCell {
+        cell: store_cell(value),
+        readers: create_group(),
+    }
+}
 
-    /// Like [`try_borrow_tracked_cell`](TrackedCellExt::try_borrow_tracked_cell),
-    /// but panics on error.
-    fn borrow_tracked_cell<T: 'static>(&mut self, cell: TrackedCell<T>) -> Ref<'_, T>;
+impl<T: 'static> TrackedCell<T> {
+    /// Like [`try_borrow`](Self::try_borrow), but panics on error.
+    #[track_caller]
+    pub fn borrow(self) -> CellRef<T> {
+        self.try_borrow().unwrap_or_else(|error| panic!("{error}"))
+    }
 
     /// Borrows the value. Inside a running node, also adds the node to the
     /// cell's readers until the node is rewound.
-    fn try_borrow_tracked_cell<T: 'static>(
-        &mut self,
-        cell: TrackedCell<T>,
-    ) -> Result<Ref<'_, T>, BorrowCellError>;
+    pub fn try_borrow(self) -> Result<CellRef<T>, BorrowCellError> {
+        // Borrow first, so a failed read isn't tracked.
+        let value = self.cell.try_borrow()?;
 
-    /// Like [`try_borrow_tracked_cell_mut`](TrackedCellExt::try_borrow_tracked_cell_mut),
-    /// but panics on error.
-    fn borrow_tracked_cell_mut<T: 'static>(&mut self, cell: TrackedCell<T>) -> RefMut<'_, T>;
-
-    /// Borrows the value mutably, and queues the cell's readers for
-    /// execution.
-    fn try_borrow_tracked_cell_mut<T: 'static>(
-        &mut self,
-        cell: TrackedCell<T>,
-    ) -> Result<RefMut<'_, T>, BorrowCellMutError>;
-
-    /// Removes the cell and its group of readers, and returns the value.
-    fn remove_tracked_cell<T: 'static>(&mut self, cell: TrackedCell<T>)
-    -> Result<T, UnknownStored>;
-}
-
-impl TrackedCellExt for Context {
-    fn store_tracked_cell<T: 'static>(&mut self, value: T) -> TrackedCell<T> {
-        TrackedCell {
-            cell: self.store_cell(value),
-            readers: self.create_group(),
-        }
-    }
-
-    #[track_caller]
-    fn borrow_tracked_cell<T: 'static>(&mut self, cell: TrackedCell<T>) -> Ref<'_, T> {
-        self.try_borrow_tracked_cell(cell)
-            .unwrap_or_else(|error| panic!("{error}"))
-    }
-
-    fn try_borrow_tracked_cell<T: 'static>(
-        &mut self,
-        cell: TrackedCell<T>,
-    ) -> Result<Ref<'_, T>, BorrowCellError> {
-        // Check the borrow first, so a failed read isn't tracked.
-        drop(self.try_borrow_cell(cell.cell)?);
-
-        if let Some(node) = self.current_node() {
-            let readers = cell.readers;
-            let added = self.add_to_group(readers, node).expect(
+        if let Some(node) = current_node() {
+            let readers = self.readers;
+            let added = readers.insert(node).expect(
                 "a tracked cell's group lives as long as the cell, and the current node is running",
             );
             if added {
-                self.register_rewind(node, move |ctx: &mut Context, _| {
+                register_rewind(node, move |_: RewindKey| {
                     // The cell may have been removed since, taking the group
                     // with it; then there's nothing to undo.
-                    let _ = ctx.remove_from_group(readers, node);
+                    let _ = readers.remove(node);
                 })
                 .expect("the current node is running, so it's in the trace");
             }
         }
 
-        self.try_borrow_cell(cell.cell)
+        Ok(value)
     }
 
+    /// Like [`try_borrow_mut`](Self::try_borrow_mut), but panics on error.
     #[track_caller]
-    fn borrow_tracked_cell_mut<T: 'static>(&mut self, cell: TrackedCell<T>) -> RefMut<'_, T> {
-        self.try_borrow_tracked_cell_mut(cell)
+    pub fn borrow_mut(self) -> CellRefMut<T> {
+        self.try_borrow_mut()
             .unwrap_or_else(|error| panic!("{error}"))
     }
 
-    fn try_borrow_tracked_cell_mut<T: 'static>(
-        &mut self,
-        cell: TrackedCell<T>,
-    ) -> Result<RefMut<'_, T>, BorrowCellMutError> {
-        // Check the borrow first, so a failed write doesn't queue anything.
-        drop(self.try_borrow_cell_mut(cell.cell)?);
+    /// Borrows the value mutably, and queues the cell's readers for
+    /// execution.
+    pub fn try_borrow_mut(self) -> Result<CellRefMut<T>, BorrowCellMutError> {
+        // Borrow first, so a failed write doesn't queue anything.
+        let value = self.cell.try_borrow_mut()?;
 
-        let readers: Vec<_> = self
-            .group_members(cell.readers)
-            .expect("a tracked cell's group lives as long as the cell")
-            .collect();
+        let readers = self
+            .readers
+            .members()
+            .expect("a tracked cell's group lives as long as the cell");
         for node in readers {
-            self.queue_execution(node);
+            queue_execution(node);
         }
 
-        self.try_borrow_cell_mut(cell.cell)
+        Ok(value)
     }
 
-    fn remove_tracked_cell<T: 'static>(
-        &mut self,
-        cell: TrackedCell<T>,
-    ) -> Result<T, UnknownStored> {
-        let value = self.remove_cell(cell.cell)?;
-        self.remove_group(cell.readers)
+    /// Removes the cell and its group of readers, like
+    /// [`StoredCell::remove`]: borrows made before stay valid, and the
+    /// value is dropped once the last of them ends.
+    pub fn remove(self) -> Result<(), UnknownStored> {
+        self.cell.remove()?;
+        self.readers
+            .delete()
             .expect("a tracked cell's group lives as long as the cell");
-        Ok(value)
+        Ok(())
     }
 }
 

@@ -7,74 +7,75 @@
 //!
 //! Run with `cargo run --example executor`.
 
-use caaqi::prelude::*;
-use caaqi_ui::{linear_executor::LinearExecutorExt, tracked_cell::TrackedCellExt};
+use caaqi_scoped::{
+    current::current_node, prelude::*, rewind::register_rewind, trace::create_node,
+};
+use caaqi_ui::{linear_executor::execute_queued, tracked_cell::store_tracked_cell};
 
 fn main() {
     let mut ctx = Context::new();
-    let name = ctx.store_tracked_cell(String::from("Ada"));
-    let count = ctx.store_tracked_cell(1);
-    let doubled = ctx.store_tracked_cell(0);
+    scope(&mut ctx, || {
+        let name = store_tracked_cell(String::from("Ada"));
+        let count = store_tracked_cell(1);
+        let doubled = store_tracked_cell(0);
 
-    // The executor sorts queued nodes by trace order, which only exists
-    // inside one tree, so every reader is a child of the same root.
-    println!("first run:");
-    run(&mut ctx, move |ctx| {
-        run(ctx, move |ctx| {
-            println!("  greeting: hello, {}", ctx.borrow_tracked_cell(name));
-        });
+        // The executor sorts queued nodes by trace order, which only exists
+        // inside one tree, so every reader is a child of the same root.
+        println!("first run:");
+        run(move || {
+            run(move || {
+                println!("  greeting: hello, {}", *name.borrow());
+            });
 
-        run(ctx, move |ctx| {
-            let count = *ctx.borrow_tracked_cell(count);
-            let doubled = *ctx.borrow_tracked_cell(doubled);
-            println!("  summary: count {count}, doubled {doubled}");
-        });
+            run(move || {
+                let count = *count.borrow();
+                let doubled = *doubled.borrow();
+                println!("  summary: count {count}, doubled {doubled}");
+            });
 
-        run(ctx, move |ctx| {
-            let value = *ctx.borrow_tracked_cell(count) * 2;
-            println!("  double: doubled = {value}");
-            *ctx.borrow_tracked_cell_mut(doubled) = value;
+            run(move || {
+                let value = *count.borrow() * 2;
+                println!("  double: doubled = {value}");
+                *doubled.borrow_mut() = value;
+            });
         });
+        // `double` wrote `doubled` after `summary` read it, which queued
+        // `summary` to run again with the new value.
+        execute_queued();
+
+        // Only `greeting` reads `name`.
+        println!("name = \"Grace\":");
+        *name.borrow_mut() = String::from("Grace");
+        execute_queued();
+
+        // `summary` and `double` read `count`, and run in trace order. Then
+        // `double` writes `doubled`, which queues `summary` again. Its turn in
+        // this round has passed, so it runs again in the next round.
+        println!("count = 5:");
+        *count.borrow_mut() = 5;
+        execute_queued();
+
+        // Writes before `execute_queued` add up: each reader is queued once.
+        println!("name = \"Alan\", count = 7:");
+        *name.borrow_mut() = String::from("Alan");
+        *count.borrow_mut() = 7;
+        execute_queued();
     });
-    // `double` wrote `doubled` after `summary` read it, which queued
-    // `summary` to run again with the new value.
-    ctx.execute_queued();
-
-    // Only `greeting` reads `name`.
-    println!("name = \"Grace\":");
-    *ctx.borrow_tracked_cell_mut(name) = String::from("Grace");
-    ctx.execute_queued();
-
-    // `summary` and `double` read `count`, and run in trace order. Then
-    // `double` writes `doubled`, which queues `summary` again. Its turn in
-    // this round has passed, so it runs again in the next round.
-    println!("count = 5:");
-    *ctx.borrow_tracked_cell_mut(count) = 5;
-    ctx.execute_queued();
-
-    // Writes before `execute_queued` add up: each reader is queued once.
-    println!("name = \"Alan\", count = 7:");
-    *ctx.borrow_tracked_cell_mut(name) = String::from("Alan");
-    *ctx.borrow_tracked_cell_mut(count) = 7;
-    ctx.execute_queued();
 }
 
 /// Creates a node running `f` and runs it. Called from a running node, it
 /// makes a child of that node, which is rewound and deleted when the parent
 /// is rewound. Called from outside of any node, it makes a root.
-fn run(ctx: &mut Context, f: impl FnMut(&mut Context) + 'static) -> NodeKey {
-    let parent = ctx.current_node();
-    let mut node = ctx.create_node(WithCurrent(f));
+fn run(f: impl FnMut() + 'static) -> TraceNode {
+    let parent = current_node();
+    let node = create_node(WithCurrent(f));
+
     if let Some(parent) = parent {
         node.set_parent(parent)
             .expect("a new node can be attached to any node");
-    }
-    let node = node.id();
-
-    if let Some(parent) = parent {
-        ctx.register_rewind(parent, move |ctx: &mut Context, _| {
+        register_rewind(parent, move |_: RewindKey| {
             // The node may have been deleted since.
-            if let Ok(mut node) = ctx.node_mut(node) {
+            if node.exists() {
                 node.rewind();
                 node.delete()
                     .expect("rewinding the node deleted its children, and it isn't running");
@@ -83,9 +84,6 @@ fn run(ctx: &mut Context, f: impl FnMut(&mut Context) + 'static) -> NodeKey {
         .expect("the parent is running, so it's in the trace");
     }
 
-    ctx.node_mut(node)
-        .unwrap()
-        .run()
-        .expect("a new node isn't running");
+    node.run().expect("a new node isn't running");
     node
 }

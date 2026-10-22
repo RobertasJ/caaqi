@@ -8,6 +8,7 @@ members = ["caaqi", "caaqi-scoped", "caaqi-ui"]
 
 [dependencies]
 caaqi.workspace = true
+caaqi-scoped.workspace = true
 caaqi-ui.workspace = true
 
 

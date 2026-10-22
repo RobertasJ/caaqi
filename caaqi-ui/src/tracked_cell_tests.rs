@@ -1,97 +1,106 @@
-use caaqi::{
+use caaqi_scoped::{
+    context::{Context, get_or_default, scope},
     current::WithCurrent,
-    rewind::NodeRewindExt,
-    trace::{NodeKey, TraceExt},
+    trace::{TraceNode, create_node},
 };
 
 use super::*;
+use crate::linear_executor::execute_queued;
 
-/// How many times each reader ran, in the order they ran.
+/// The readers that ran, in the order they ran.
 #[derive(Default)]
-struct Runs(Vec<NodeKey>);
+struct Runs(Vec<TraceNode>);
 
-fn runs(ctx: &Context) -> &[NodeKey] {
-    ctx.get::<Runs>().map_or(&[], |runs| &runs.0)
+fn runs() -> Vec<TraceNode> {
+    get_or_default(|runs: &mut Runs| runs.0.clone())
 }
 
 /// A node that reads `cell` each time it runs.
-fn reader(ctx: &mut Context, cell: TrackedCell<i32>) -> NodeKey {
-    let node = ctx
-        .create_node(WithCurrent(move |ctx: &mut Context| {
-            let _ = *ctx.borrow_tracked_cell(cell);
-            let node = ctx.current_node().unwrap();
-            ctx.get_or_default::<Runs>().0.push(node);
-        }))
-        .id();
-    ctx.node_mut(node).unwrap().run().unwrap();
+fn reader(cell: TrackedCell<i32>) -> TraceNode {
+    let node = create_node(WithCurrent(move || {
+        let _ = *cell.borrow();
+        let node = current_node().unwrap();
+        get_or_default(|runs: &mut Runs| runs.0.push(node));
+    }));
+    node.run().unwrap();
     node
 }
 
 #[test]
 fn reads_and_writes_go_through_to_the_value() {
     let mut ctx = Context::new();
-    let cell = ctx.store_tracked_cell(1);
+    scope(&mut ctx, || {
+        let cell = store_tracked_cell(1);
 
-    *ctx.borrow_tracked_cell_mut(cell) += 1;
-    assert_eq!(*ctx.borrow_tracked_cell(cell), 2);
-    assert_eq!(ctx.remove_tracked_cell(cell).unwrap(), 2);
+        *cell.borrow_mut() += 1;
+        assert_eq!(*cell.borrow(), 2);
+        cell.remove().unwrap();
+    });
 }
 
 #[test]
 fn writing_reruns_readers() {
     let mut ctx = Context::new();
-    let cell = ctx.store_tracked_cell(0);
-    let node = reader(&mut ctx, cell);
+    scope(&mut ctx, || {
+        let cell = store_tracked_cell(0);
+        let node = reader(cell);
 
-    *ctx.borrow_tracked_cell_mut(cell) = 1;
-    ctx.execute_queued();
-    assert_eq!(runs(&ctx), [node, node]);
+        *cell.borrow_mut() = 1;
+        execute_queued();
+        assert_eq!(runs(), [node, node]);
 
-    // The rerun read the cell again, so it's still a reader.
-    *ctx.borrow_tracked_cell_mut(cell) = 2;
-    ctx.execute_queued();
-    assert_eq!(runs(&ctx), [node, node, node]);
+        // The rerun read the cell again, so it's still a reader.
+        *cell.borrow_mut() = 2;
+        execute_queued();
+        assert_eq!(runs(), [node, node, node]);
+    });
 }
 
 #[test]
 fn reading_outside_a_node_isnt_tracked() {
     let mut ctx = Context::new();
-    let cell = ctx.store_tracked_cell(0);
+    scope(&mut ctx, || {
+        let cell = store_tracked_cell(0);
 
-    let _ = *ctx.borrow_tracked_cell(cell);
-    assert_eq!(ctx.group_members(cell.readers).unwrap().count(), 0);
+        let _ = *cell.borrow();
+        assert_eq!(cell.readers.members().unwrap().count(), 0);
+    });
 }
 
 #[test]
 fn rewinding_a_reader_stops_tracking_it() {
     let mut ctx = Context::new();
-    let cell = ctx.store_tracked_cell(0);
-    let node = reader(&mut ctx, cell);
+    scope(&mut ctx, || {
+        let cell = store_tracked_cell(0);
+        let node = reader(cell);
 
-    ctx.node_mut(node).unwrap().rewind();
-    *ctx.borrow_tracked_cell_mut(cell) = 1;
-    ctx.execute_queued();
-    assert_eq!(runs(&ctx), [node]);
+        node.rewind();
+        *cell.borrow_mut() = 1;
+        execute_queued();
+        assert_eq!(runs(), [node]);
+    });
 }
 
 #[test]
 fn removing_the_cell_removes_its_group() {
     let mut ctx = Context::new();
-    let cell = ctx.store_tracked_cell(0);
-    let node = reader(&mut ctx, cell);
+    scope(&mut ctx, || {
+        let cell = store_tracked_cell(0);
+        let node = reader(cell);
 
-    assert_eq!(ctx.remove_tracked_cell(cell).unwrap(), 0);
-    assert!(!ctx.group_exists(cell.readers));
-    // The reader's rewind finds the group gone, and does nothing.
-    ctx.node_mut(node).unwrap().rewind();
+        cell.remove().unwrap();
+        assert!(!cell.readers.exists());
+        // The reader's rewind finds the group gone, and does nothing.
+        node.rewind();
 
-    assert!(matches!(
-        ctx.try_borrow_tracked_cell(cell),
-        Err(BorrowCellError::UnknownStored(_))
-    ));
-    assert!(matches!(
-        ctx.try_borrow_tracked_cell_mut(cell),
-        Err(BorrowCellMutError::UnknownStored(_))
-    ));
-    assert!(ctx.remove_tracked_cell(cell).is_err());
+        assert!(matches!(
+            cell.try_borrow(),
+            Err(BorrowCellError::UnknownStored(_))
+        ));
+        assert!(matches!(
+            cell.try_borrow_mut(),
+            Err(BorrowCellMutError::UnknownStored(_))
+        ));
+        assert!(cell.remove().is_err());
+    });
 }
