@@ -6,4 +6,5 @@ edition = "2024"
 [dependencies]
 caaqi-core-scoped.workspace = true
 ouroboros = "0.18"
+slotmap = "1.1"
 thiserror.workspace = true
