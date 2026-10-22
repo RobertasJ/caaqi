@@ -10,7 +10,10 @@
 use caaqi_scoped::{
     current::current_node, prelude::*, rewind::register_rewind, trace::create_node,
 };
-use caaqi_ui::{linear_executor::execute_queued, tracked_cell::store_tracked_cell};
+use caaqi_ui::{
+    linear_executor::{NodeExecutionExt, execute_queued},
+    tracked_cell::store_tracked_cell,
+};
 
 fn main() {
     let mut ctx = Context::new();
@@ -24,19 +27,19 @@ fn main() {
         println!("first run:");
         run(move || {
             run(move || {
-                println!("  greeting: hello, {}", *name.borrow());
+                println!("  greeting: hello, {}", *name.read());
             });
 
             run(move || {
-                let count = *count.borrow();
-                let doubled = *doubled.borrow();
+                let count = *count.read();
+                let doubled = *doubled.read();
                 println!("  summary: count {count}, doubled {doubled}");
             });
 
             run(move || {
-                let value = *count.borrow() * 2;
+                let value = *count.read() * 2;
                 println!("  double: doubled = {value}");
-                *doubled.borrow_mut() = value;
+                *doubled.write() = value;
             });
         });
         // `double` wrote `doubled` after `summary` read it, which queued
@@ -45,20 +48,20 @@ fn main() {
 
         // Only `greeting` reads `name`.
         println!("name = \"Grace\":");
-        *name.borrow_mut() = String::from("Grace");
+        *name.write() = String::from("Grace");
         execute_queued();
 
         // `summary` and `double` read `count`, and run in trace order. Then
         // `double` writes `doubled`, which queues `summary` again. Its turn in
         // this round has passed, so it runs again in the next round.
         println!("count = 5:");
-        *count.borrow_mut() = 5;
+        *count.write() = 5;
         execute_queued();
 
         // Writes before `execute_queued` add up: each reader is queued once.
         println!("name = \"Alan\", count = 7:");
-        *name.borrow_mut() = String::from("Alan");
-        *count.borrow_mut() = 7;
+        *name.write() = String::from("Alan");
+        *count.write() = 7;
         execute_queued();
     });
 }
@@ -77,6 +80,7 @@ fn run(f: impl FnMut() + 'static) -> TraceNode {
             // The node may have been deleted since.
             if node.exists() {
                 node.rewind();
+                node.unqueue_execution();
                 node.delete()
                     .expect("rewinding the node deleted its children, and it isn't running");
             }

@@ -114,7 +114,7 @@ pub fn store_cell<T: 'static>(value: T) -> StoredCell<T> {
 
 impl<T: 'static> StoredCell<T> {
     /// The cell, shared out of the context.
-    fn shared(self) -> Result<Rc<RefCell<T>>, UnknownStored> {
+    pub(crate) fn shared(self) -> Result<Rc<RefCell<T>>, UnknownStored> {
         self.0.get(Rc::clone)
     }
 
