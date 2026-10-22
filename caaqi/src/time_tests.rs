@@ -31,11 +31,11 @@ fn the_timeline_follows_the_run() {
     scope(&mut Machine::new(), || {
         let (step, result) = run_step_with_id(|| ());
         let (start, end) = (step.start(), step.end().unwrap());
-        let created = result.history()[0].time;
+        let written = result.history()[0].time;
 
-        assert_eq!(times(), [start, end, created]);
+        assert_eq!(times(), [start, written, end]);
         assert_eq!(first(), Some(start));
-        assert_eq!(last(), Some(created));
+        assert_eq!(last(), Some(end));
         assert_eq!(len(), 3);
         assert!(!is_empty());
         assert!(start.exists());
@@ -60,8 +60,7 @@ fn time_cmp_and_partial_ord_follow_the_timeline() {
 fn next_and_prev_step_along_the_timeline() {
     scope(&mut Machine::new(), || {
         let (step, result) = run_step_with_id(|| ());
-        let (a, b) = (step.start(), step.end().unwrap());
-        let c = result.history()[0].time;
+        let (a, b, c) = (step.start(), result.history()[0].time, step.end().unwrap());
 
         assert_eq!(a.prev(), None);
         assert_eq!(a.next(), Some(b));

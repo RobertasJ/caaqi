@@ -79,7 +79,7 @@ fn get_at_before_creation_is_none() {
 fn reads_and_writes_are_recorded_on_the_current_step() {
     scope(&mut Machine::new(), || {
         let value = create_value(1);
-        let (step, _) = run_step_with_id(|| {
+        let (step, done) = run_step_with_id(|| {
             value.with(|_| ());
             value.update(|value| *value += 1);
         });
@@ -90,7 +90,12 @@ fn reads_and_writes_are_recorded_on_the_current_step() {
         };
         // `update` read version 0 too, to copy it.
         assert_eq!(step.reads(), [access(0)]);
-        assert_eq!(step.writes(), [access(1)]);
+        // The step also wrote its own result.
+        let done = Access {
+            value: done.id(),
+            version: 0,
+        };
+        assert_eq!(step.writes(), [access(1), done]);
     });
 }
 

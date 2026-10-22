@@ -13,6 +13,13 @@ fn result<T: Copy + 'static>(machine: &mut Machine, value: Value<T>) -> T {
     *machine.read(value).unwrap()
 }
 
+fn access<T>(value: Value<T>, version: u64) -> Access {
+    Access {
+        value: value.id(),
+        version,
+    }
+}
+
 /// The step's start and end. Panics if it's still running.
 fn section(machine: &Machine, step: StepId) -> (Time, Time) {
     let step = machine.step(step).unwrap();
@@ -32,14 +39,18 @@ fn run_step_returns_the_step_and_the_result() {
 }
 
 #[test]
-fn an_empty_step_adds_its_start_end_and_result_to_the_timeline() {
+fn an_empty_step_adds_its_start_result_and_end_to_the_timeline() {
     let mut machine = Machine::new();
     let (step, unit) = machine.run_step_with_id(|_| ());
 
     let (start, end) = section(&machine, step);
-    let created = machine.history(unit).unwrap()[0].time();
+    let written = machine.history(unit).unwrap()[0].time();
     let times: Vec<_> = machine.timeline().times().collect();
-    assert_eq!(times, [start, end, created]);
+    assert_eq!(
+        times,
+        [start, written, end],
+        "the result is inside the section"
+    );
 }
 
 #[test]
@@ -129,6 +140,7 @@ fn a_panicking_step_is_closed() {
     assert_eq!(machine.timeline().len(), 4);
     for step in machine.steps().collect::<Vec<_>>() {
         assert!(!machine.step(step).unwrap().is_running());
+        assert_eq!(machine.step(step).unwrap().writes().count(), 0);
     }
 }
 
@@ -138,40 +150,63 @@ fn reads_and_writes_are_recorded_on_the_innermost_step() {
     let a = machine.create_value(1);
     let b = machine.create_value(2);
 
-    let (outer, inside) = machine.run_step_with_id(|machine| {
+    let (outer, outer_result) = machine.run_step_with_id(|machine| {
         machine.read(a).unwrap();
         machine.run_step_with_id(|machine| {
             machine.read(b).unwrap();
             machine.write(a, 10).unwrap();
         })
     });
-    let (inner, inner_result) = result(&mut machine, inside);
+    let (inner, inner_result) = result(&mut machine, outer_result);
 
     let outer = machine.step(outer).unwrap();
-    let a0 = Access {
-        value: a.id(),
-        version: 0,
-    };
-    assert_eq!(outer.reads().collect::<Vec<_>>(), [a0]);
-    // The inner step's result is created after its section closes, so it's
-    // recorded on the outer step.
-    let inner_result0 = Access {
-        value: inner_result.id(),
-        version: 0,
-    };
-    assert_eq!(outer.writes().collect::<Vec<_>>(), [inner_result0]);
+    assert_eq!(outer.reads().collect::<Vec<_>>(), [access(a, 0)]);
+    // The outer step wrote only its own result: the inner step's result is
+    // the inner step's write.
+    assert_eq!(
+        outer.writes().collect::<Vec<_>>(),
+        [access(outer_result, 0)]
+    );
 
     let inner = machine.step(inner).unwrap();
-    let b0 = Access {
-        value: b.id(),
-        version: 0,
-    };
-    let a1 = Access {
-        value: a.id(),
-        version: 1,
-    };
-    assert_eq!(inner.reads().collect::<Vec<_>>(), [b0]);
-    assert_eq!(inner.writes().collect::<Vec<_>>(), [a1]);
+    assert_eq!(inner.reads().collect::<Vec<_>>(), [access(b, 0)]);
+    assert_eq!(
+        inner.writes().collect::<Vec<_>>(),
+        [access(a, 1), access(inner_result, 0)]
+    );
+}
+
+#[test]
+fn a_step_writes_its_result_and_its_parent_reads_it() {
+    let mut machine = Machine::new();
+    let (outer, outer_result) = machine.run_step_with_id(|machine| {
+        let (inner, inner_result) = machine.run_step_with_id(|_| 7);
+        let seen = *machine.read(inner_result).unwrap();
+        (inner, inner_result, seen)
+    });
+    let (inner, inner_result, seen) = result(&mut machine, outer_result);
+    assert_eq!(seen, 7);
+
+    let recorded = machine.step(inner).unwrap();
+    assert_eq!(
+        recorded.writes().collect::<Vec<_>>(),
+        [access(inner_result, 0)]
+    );
+    let recorded = machine.step(outer).unwrap();
+    assert_eq!(
+        recorded.reads().collect::<Vec<_>>(),
+        [access(inner_result, 0)]
+    );
+    assert_eq!(
+        recorded.writes().collect::<Vec<_>>(),
+        [access(outer_result, 0)]
+    );
+
+    // The write's point is the last one inside the inner step's section.
+    let written = machine.history(inner_result).unwrap()[0].time();
+    let (start, end) = section(&machine, inner);
+    assert!(before(&machine, start, written));
+    assert_eq!(machine.timeline().next(written), Ok(Some(end)));
 }
 
 #[test]

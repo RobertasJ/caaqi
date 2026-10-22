@@ -40,6 +40,48 @@ fn a_new_value_holds_its_initial_value_at_version_0() {
 }
 
 #[test]
+fn declaring_a_value_writes_nothing() {
+    let mut machine = Machine::new();
+    let (step, declared) = machine.run_step_with_id(|machine| machine.declare_value::<i32>());
+    let declared = *machine.read(declared).unwrap();
+
+    assert_eq!(machine.history(declared).unwrap().len(), 0);
+    let (start, end) = {
+        let step = machine.step(step).unwrap();
+        (step.start(), step.end().unwrap())
+    };
+    assert_eq!(machine.read_at(declared, end), Ok(None));
+    // Only the step's start, its result and its end: no point for the
+    // declaration, and no write recorded for it.
+    assert_eq!(machine.timeline().len(), 3);
+    assert!(!writes(&machine, step).contains(&access(declared, 0)));
+
+    machine.write(declared, 5).unwrap();
+    assert_eq!(versions(&machine, declared), [5]);
+    assert_eq!(machine.version(declared), Ok(0));
+    assert_eq!(machine.read_at(declared, start), Ok(None));
+}
+
+#[test]
+#[should_panic(expected = "only written values are handed out")]
+fn reading_a_value_before_its_first_write_breaks_an_invariant() {
+    let mut machine = Machine::new();
+    let declared = machine.declare_value::<i32>();
+    let _ = machine.read(declared);
+}
+
+#[test]
+fn a_panicking_step_leaves_no_result_value() {
+    let mut machine = Machine::new();
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        machine.run_step(|_| -> i32 { panic!("boom") })
+    }));
+
+    assert!(panicked.is_err());
+    assert!(machine.values.histories.is_empty());
+}
+
+#[test]
 fn writes_add_versions_at_the_end_of_the_timeline() {
     let mut machine = Machine::new();
     let value = machine.create_value(1);
@@ -115,7 +157,7 @@ fn read_at_a_step_returns_what_it_saw() {
 fn reads_and_writes_are_recorded_with_their_versions() {
     let mut machine = Machine::new();
     let value = machine.create_value(1);
-    let (step, _) = machine.run_step_with_id(|machine| {
+    let (step, done) = machine.run_step_with_id(|machine| {
         machine.read(value).unwrap();
         machine.write(value, 2).unwrap();
         machine.read(value).unwrap();
@@ -123,19 +165,23 @@ fn reads_and_writes_are_recorded_with_their_versions() {
     });
 
     assert_eq!(reads(&machine, step), [access(value, 0), access(value, 1)]);
-    assert_eq!(writes(&machine, step), [access(value, 1), access(value, 2)]);
+    // The step also wrote its own result.
+    assert_eq!(
+        writes(&machine, step),
+        [access(value, 1), access(value, 2), access(done, 0)]
+    );
 }
 
 #[test]
 fn update_records_a_read_of_the_version_it_copied() {
     let mut machine = Machine::new();
     let value = machine.create_value(1);
-    let (step, _) = machine.run_step_with_id(|machine| {
+    let (step, done) = machine.run_step_with_id(|machine| {
         machine.update(value, |value| *value += 1).unwrap();
     });
 
     assert_eq!(reads(&machine, step), [access(value, 0)]);
-    assert_eq!(writes(&machine, step), [access(value, 1)]);
+    assert_eq!(writes(&machine, step), [access(value, 1), access(done, 0)]);
 }
 
 #[test]
@@ -153,10 +199,13 @@ fn reading_the_same_version_twice_records_it_once() {
 #[test]
 fn creating_a_value_in_a_step_records_a_write() {
     let mut machine = Machine::new();
-    let (step, value) = machine.run_step_with_id(|machine| machine.create_value(1));
-    let value = *machine.read(value).unwrap();
+    let (step, result) = machine.run_step_with_id(|machine| machine.create_value(1));
+    let value = *machine.read(result).unwrap();
 
-    assert_eq!(writes(&machine, step), [access(value, 0)]);
+    assert_eq!(
+        writes(&machine, step),
+        [access(result, 0), access(value, 0)]
+    );
 }
 
 #[test]
@@ -194,10 +243,11 @@ fn reads_and_writes_outside_steps_are_not_recorded() {
     let value = machine.create_value(1);
     machine.read(value).unwrap();
     machine.write(value, 2).unwrap();
-    let (step, _) = machine.run_step_with_id(|_| ());
+    let (step, done) = machine.run_step_with_id(|_| ());
 
     assert_eq!(reads(&machine, step), []);
-    assert_eq!(writes(&machine, step), []);
+    // Only the step's own result.
+    assert_eq!(writes(&machine, step), [access(done, 0)]);
     // The write still made a version.
     assert_eq!(versions(&machine, value), [1, 2]);
 }

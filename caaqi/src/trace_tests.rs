@@ -13,8 +13,9 @@ fn run_step_returns_the_step_and_the_result() {
         assert_eq!(step.parent(), None);
         assert!(!step.is_running());
         assert_eq!(steps(), [step]);
-        let created = result.history()[0].time;
-        assert_eq!(times(), [step.start(), step.end().unwrap(), created]);
+        // The step wrote its result inside its section.
+        let written = result.history()[0].time;
+        assert_eq!(times(), [step.start(), written, step.end().unwrap()]);
     });
 }
 
@@ -51,7 +52,7 @@ fn reads_and_writes_are_recorded_on_the_current_step() {
     scope(&mut Machine::new(), || {
         let a = create_value(1);
         let b = create_value(0);
-        let (step, _) = run_step_with_id(|| b.set(a.get() + 1));
+        let (step, done) = run_step_with_id(|| b.set(a.get() + 1));
 
         assert_eq!(
             step.reads(),
@@ -60,12 +61,19 @@ fn reads_and_writes_are_recorded_on_the_current_step() {
                 version: 0
             }]
         );
+        // The step also wrote its own result.
         assert_eq!(
             step.writes(),
-            [Access {
-                value: b.id(),
-                version: 1
-            }]
+            [
+                Access {
+                    value: b.id(),
+                    version: 1
+                },
+                Access {
+                    value: done.id(),
+                    version: 0
+                }
+            ]
         );
     });
 }

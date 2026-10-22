@@ -91,7 +91,8 @@ impl Step {
 
     /// The versions of values the step wrote itself, not counting the steps
     /// inside it, ordered by value, then version. Creating a value counts as
-    /// writing its first version.
+    /// writing its first version, and the step's result is version 0 of its
+    /// result value.
     pub fn writes(&self) -> impl Iterator<Item = Access> + '_ {
         self.writes.iter().copied()
     }
@@ -138,14 +139,18 @@ impl Machine {
     /// section of the innermost running step, which becomes its parent.
     /// While `f` runs, it's the [current step](Self::current_step): the
     /// values `f` reads and writes are recorded on it, and the steps it runs
-    /// are inside its section. Then a last point closes the section.
+    /// are inside its section. Then what `f` returned is written as the
+    /// result value's version 0, and a last point closes the section.
     ///
-    /// The result value is created after the section closes, so its point is
-    /// outside the section, and its creation is recorded as a write on the
-    /// parent step, if there is one.
+    /// The result value's identity belongs to the parent's section: it's
+    /// declared, with no contents yet, before the step starts, and only a
+    /// rewrite of the parent would end it. Its contents are the step's
+    /// output, so the write is recorded on the step, and its point is the
+    /// last one inside the step's section. A parent that reads the result
+    /// records a read, as with any value.
     ///
-    /// If `f` panics, the section is closed before the panic carries on, and
-    /// no result value is created.
+    /// If `f` panics, the declared result value is removed (it was never
+    /// handed out), and the section is closed before the panic carries on.
     pub fn run_step<R: 'static>(&mut self, f: impl FnOnce(&mut Machine) -> R) -> Value<R> {
         self.run_step_with_id(f).1
     }
@@ -155,6 +160,9 @@ impl Machine {
         &mut self,
         f: impl FnOnce(&mut Machine) -> R,
     ) -> (StepId, Value<R>) {
+        // Declared while the parent is still current, though declaring
+        // records nothing.
+        let result = self.declare_value::<R>();
         let start = self.timeline.push_back();
         let trace = &mut self.trace;
         let step = trace.steps.insert(Step {
@@ -167,15 +175,27 @@ impl Machine {
         trace.order.push(step);
         trace.running.push(step);
 
-        let result = catch_unwind(AssertUnwindSafe(|| f(self)));
+        let output = catch_unwind(AssertUnwindSafe(|| f(self)));
+        let output = match output {
+            // Written while the step is still current, inside its section.
+            Ok(output) => {
+                self.write(result, output)
+                    .expect("the result value was just declared");
+                Ok(())
+            }
+            Err(panic) => {
+                self.values.remove_unwritten(result);
+                Err(panic)
+            }
+        };
 
         let closed = self.trace.running.pop();
         assert_eq!(closed, Some(step), "steps close in the order they started");
         let end = self.timeline.push_back();
         self.trace.steps[step].end = Some(end);
 
-        match result {
-            Ok(value) => (step, self.create_value(value)),
+        match output {
+            Ok(()) => (step, result),
             Err(panic) => resume_unwind(panic),
         }
     }

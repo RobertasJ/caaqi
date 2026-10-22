@@ -42,8 +42,9 @@ impl From<Step> for StepId {
 }
 
 /// Runs `f` as a new step, and returns a value holding what `f` returned.
-/// The value is created after the step's section closes. Inside `f`, the
-/// step is [`current_step`]; [`run_step_with_id`] also returns it.
+/// The step writes the value itself, as the last thing in its section.
+/// Inside `f`, the step is [`current_step`]; [`run_step_with_id`] also
+/// returns it.
 ///
 /// [`Machine::run_step`](caaqi_core::machine::Machine::run_step): the step
 /// starts at the end of the timeline, inside the innermost running step,
@@ -150,7 +151,8 @@ impl Step {
 
     /// The versions of values the step wrote itself, not counting the steps
     /// inside it, ordered by value, then version. Creating a value counts as
-    /// writing its first version.
+    /// writing its first version, and the step's result is version 0 of its
+    /// result value.
     pub fn try_writes(self) -> Result<Vec<Access>, UnknownStep> {
         self.try_recorded(|step| step.writes().collect())
     }

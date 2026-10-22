@@ -12,7 +12,14 @@
 //! sorted.
 //!
 //! A write's version is its index in the history: 0 for the value's
-//! creation, then one more per write.
+//! first write, then one more per write.
+//!
+//! A value's identity and its contents are owned separately. A write belongs
+//! to the step whose run decides what it holds, and the value itself belongs
+//! to the section whose rewrite would end its lifetime. Usually both are the
+//! step that creates the value, but a step's result is declared by the
+//! parent and written by the step: see
+//! [`run_step`](Machine::run_step).
 //!
 //! ```
 //! use caaqi_core::prelude::*;
@@ -125,13 +132,27 @@ impl<T> HistoryEntry<T> {
 }
 
 /// Every value's history. Each is a `Vec<HistoryEntry<T>>` for its own `T`,
-/// never empty, sorted by time.
+/// sorted by time. A history is empty only for a declared value that hasn't
+/// been written yet, and such a value is never handed out.
 #[derive(Default)]
 pub(crate) struct Values {
     histories: SlotMap<ValueId, Box<dyn Any>>,
 }
 
 impl Values {
+    /// Removes a declared value that was never written, such as the result
+    /// of a step that panicked.
+    pub(crate) fn remove_unwritten<T: 'static>(&mut self, value: Value<T>) {
+        let history = self
+            .histories
+            .remove(value.id)
+            .expect("the declared value is in the machine");
+        let history = history
+            .downcast::<Vec<HistoryEntry<T>>>()
+            .expect("the declared value has its type");
+        assert!(history.is_empty(), "the declared value was never written");
+    }
+
     fn history<T: 'static>(&self, value: Value<T>) -> Result<&[HistoryEntry<T>], UnknownValue> {
         self.histories
             .get(value.id)
@@ -153,10 +174,9 @@ impl Values {
 
 /// The newest version of a history, which is its last index.
 fn newest<T>(history: &[HistoryEntry<T>]) -> usize {
-    history
-        .len()
-        .checked_sub(1)
-        .expect("a value's history is never empty")
+    history.len().checked_sub(1).expect(
+        "only written values are handed out, and a value's history is empty only before its first write",
+    )
 }
 
 /// The version of the entry at `index`.
@@ -165,23 +185,34 @@ fn version(index: usize) -> u64 {
 }
 
 impl Machine {
-    /// Creates a value holding `initial`. Its creation is its first write,
-    /// version 0, at a new point at the end of the timeline, and it's
-    /// recorded on the current step.
-    pub fn create_value<T: 'static>(&mut self, initial: T) -> Value<T> {
-        let time = self.timeline.push_back();
-        let id = self.values.histories.insert(Box::new(vec![HistoryEntry {
-            time,
-            snapshot: initial,
-        }]));
-        self.trace.record_write(Access {
-            value: id,
-            version: 0,
-        });
+    /// Declares a value with no contents yet: its history is empty until
+    /// its first [`write`](Self::write), which is version 0.
+    ///
+    /// Declaring isn't a write. It makes no version, adds no point to the
+    /// timeline, and records nothing on the current step. It only gives the
+    /// value its identity, so the value can be declared in one place and
+    /// written in another: a step's result is declared before the step runs
+    /// and written by the step itself.
+    ///
+    /// Until the first write, the value has no contents to see:
+    /// [`read_at`](Self::read_at) returns `None` at any point.
+    // TODO: make this public. See CLAUDE.md for what that takes.
+    pub(crate) fn declare_value<T: 'static>(&mut self) -> Value<T> {
+        let history: Vec<HistoryEntry<T>> = Vec::new();
         Value {
-            id,
+            id: self.values.histories.insert(Box::new(history)),
             _type: PhantomData,
         }
+    }
+
+    /// Creates a value holding `initial`: it declares the value, then writes
+    /// `initial` as its first version, 0, at a new point at the end of the
+    /// timeline. The write is recorded on the current step.
+    pub fn create_value<T: 'static>(&mut self, initial: T) -> Value<T> {
+        let value = self.declare_value();
+        self.write(value, initial)
+            .expect("the value was just declared");
+        value
     }
 
     /// The value now: its newest write. The read is recorded on the current
@@ -192,8 +223,8 @@ impl Machine {
     }
 
     /// The value as seen at `time`: its newest write at or before it, or
-    /// `None` if the value was created after `time`. When there's one, the
-    /// read is recorded on the current step.
+    /// `None` if the value's first write is after `time`. When there's one,
+    /// the read is recorded on the current step.
     pub fn read_at<T: 'static>(
         &mut self,
         value: Value<T>,
@@ -206,10 +237,11 @@ impl Machine {
     }
 
     /// Replaces the value with `new`: a new version, at a new point at the
-    /// end of the timeline. The write is recorded on the current step.
+    /// end of the timeline. The write is recorded on the current step. On a
+    /// value that hasn't been written yet, this first write is version 0.
     pub fn write<T: 'static>(&mut self, value: Value<T>, new: T) -> Result<(), UnknownValue> {
         // Fail before adding a point for a value that isn't there.
-        let index = newest(self.values.history(value)?) + 1;
+        let index = self.values.history(value)?.len();
         let time = self.timeline.push_back();
         self.values.history_mut(value)?.push(HistoryEntry {
             time,

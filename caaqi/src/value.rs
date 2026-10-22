@@ -133,7 +133,7 @@ impl<T: 'static> Value<T> {
     }
 
     /// A copy of the value as seen at `time`: its newest write at or before
-    /// it, or `None` if the value was created after `time`. When there's
+    /// it, or `None` if the value's first write is after `time`. When there's
     /// one, the read is recorded on the current step.
     pub fn try_get_at(self, time: Time) -> Result<Option<T>, ReadAtError>
     where
