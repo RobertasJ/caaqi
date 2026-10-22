@@ -170,7 +170,7 @@ impl<T: 'static> TrackedCell<T> {
     /// [`WithCurrent`](caaqi_scoped::current::WithCurrent)), there's no node
     /// to add, and it does nothing.
     pub fn subscribe(self) -> Result<(), UnknownStored> {
-        self.cell.shared()?;
+        self.cell.check_exists()?;
         let Some(node) = current_node() else {
             return Ok(());
         };
@@ -192,7 +192,7 @@ impl<T: 'static> TrackedCell<T> {
 
     /// Queues the cell's readers for execution, as writing does.
     pub fn notify(self) -> Result<(), UnknownStored> {
-        self.cell.shared()?;
+        self.cell.check_exists()?;
         let readers = self
             .readers
             .members()

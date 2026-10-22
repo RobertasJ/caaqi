@@ -11,7 +11,7 @@ use std::{cmp::Ordering, collections::VecDeque};
 use caaqi_scoped::{
     context::{get_or_default, resource_scope},
     current::{current_node, current_rewind},
-    trace::TraceNode,
+    trace::{CmpNodesError, DifferentTrees, TraceNode, UnknownNode},
 };
 
 /// The executor's resource. Everything public goes through
@@ -58,16 +58,26 @@ impl LinearExecutor {
     /// Inserts `node` where it belongs in trace order, unless it's already
     /// queued or running now. Inserted before the running node, it waits for
     /// the next round, and the cursor moves to stay ahead of it.
-    fn insert(&mut self, node: TraceNode) {
+    fn insert(&mut self, node: TraceNode) -> Result<(), QueueExecutionError> {
         if self.running == Some(node) {
-            return;
+            return Ok(());
+        }
+
+        // The running and queued nodes share one tree, so comparing with one
+        // of them checks that `node` is in the trace, and in that tree.
+        match self.running.or_else(|| self.queue.front().copied()) {
+            Some(reference) => {
+                reference.trace_cmp(node)?;
+            }
+            None if !node.exists() => return Err(UnknownNode(node.into()).into()),
+            None => {}
         }
 
         let position = self
             .queue
             .partition_point(|&queued| cmp_queued(queued, node) == Ordering::Less);
         if self.queue.get(position) == Some(&node) {
-            return;
+            return Ok(());
         }
 
         self.queue.insert(position, node);
@@ -80,6 +90,7 @@ impl LinearExecutor {
         {
             *cursor += 1;
         }
+        Ok(())
     }
 
     /// Takes `node` out of the queue, and returns whether it was there.
@@ -104,7 +115,7 @@ impl LinearExecutor {
 /// Compares two nodes that the executor holds in trace order.
 fn cmp_queued(a: TraceNode, b: TraceNode) -> Ordering {
     a.trace_cmp(b).expect(
-        "queued nodes are in the trace, since they're unqueued before they're deleted, and in the same tree",
+        "queued nodes are in the trace, since they're unqueued before they're deleted, and were checked to be in the same tree",
     )
 }
 
@@ -129,19 +140,45 @@ pub fn execute_queued() {
     }
 }
 
+/// Why [`try_queue_execution`](NodeExecutionExt::try_queue_execution)
+/// failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum QueueExecutionError {
+    /// The node isn't in the trace.
+    #[error(transparent)]
+    UnknownNode(#[from] UnknownNode),
+    /// The node isn't in the same tree as the nodes queued or running now.
+    #[error(transparent)]
+    DifferentTrees(#[from] DifferentTrees),
+}
+
+impl From<CmpNodesError> for QueueExecutionError {
+    fn from(error: CmpNodesError) -> Self {
+        match error {
+            CmpNodesError::UnknownNode(error) => error.into(),
+            CmpNodesError::DifferentTrees(error) => error.into(),
+        }
+    }
+}
+
 /// The executor's operations on a node.
 pub trait NodeExecutionExt {
+    /// Like [`try_queue_execution`](Self::try_queue_execution), but panics on
+    /// error.
+    #[track_caller]
+    fn queue_execution(self);
+
     /// Queues the node to run. While executing, a node after the running one
     /// runs in the same round; any other runs in the next round. Queuing a
     /// node that's already queued, or running, does nothing.
     ///
+    /// Fails if the node isn't in the trace, or isn't in the same tree as
+    /// the nodes queued or running now: nodes in different trees have no
+    /// order to run in.
+    ///
     /// Call [`unqueue_execution`](Self::unqueue_execution) before deleting a
     /// queued node.
-    ///
-    /// # Panics
-    ///
-    /// If the node isn't in the trace.
-    fn queue_execution(self);
+    fn try_queue_execution(self) -> Result<(), QueueExecutionError>;
 
     /// Takes the node out of the queue, so it doesn't run. Returns whether
     /// it was queued; the node running now isn't. Call it before deleting a
@@ -151,12 +188,16 @@ pub trait NodeExecutionExt {
 }
 
 impl NodeExecutionExt for TraceNode {
+    #[track_caller]
     fn queue_execution(self) {
-        assert!(self.exists(), "can't queue a node that isn't in the trace");
+        self.try_queue_execution()
+            .unwrap_or_else(|error| panic!("{error}"));
+    }
 
+    fn try_queue_execution(self) -> Result<(), QueueExecutionError> {
         get_or_default(|_: &mut LinearExecutor| {});
         // Lend the executor out, so the trace can be read while changing it.
-        resource_scope(|executor: &mut LinearExecutor| executor.insert(self));
+        resource_scope(|executor: &mut LinearExecutor| executor.insert(self))
     }
 
     fn unqueue_execution(self) -> bool {

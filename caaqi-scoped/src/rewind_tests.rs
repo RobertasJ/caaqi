@@ -13,7 +13,7 @@ fn rewinds_run_with_the_context_in_scope() {
     scope(&mut ctx, || {
         let node = create_node(|_: TraceNode| {});
         let key = register_rewind(node, |key: RewindKey| {
-            assert_eq!(rewind_node_of(key).is_some(), true);
+            assert!(rewind_node_of(key).is_some());
             get_or_default(|log: &mut Log| log.0.push("rewound"));
         })
         .unwrap();

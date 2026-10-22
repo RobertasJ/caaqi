@@ -193,3 +193,41 @@ fn nodes_queued_while_rewinding_keep_their_place() {
         assert_eq!(ran(), [c1, c2, c3, c0]);
     });
 }
+
+#[test]
+fn queuing_a_deleted_node_fails() {
+    let mut ctx = Context::new();
+    scope(&mut ctx, || {
+        let node = create_node(runner);
+        node.delete().unwrap();
+        assert_eq!(
+            node.try_queue_execution(),
+            Err(UnknownNode(node.into()).into())
+        );
+
+        // Also with a queue to compare against.
+        let [c0, ..] = tree();
+        c0.queue_execution();
+        assert_eq!(
+            node.try_queue_execution(),
+            Err(UnknownNode(node.into()).into())
+        );
+    });
+}
+
+#[test]
+fn queuing_a_node_in_another_tree_fails() {
+    let mut ctx = Context::new();
+    scope(&mut ctx, || {
+        let [c0, ..] = tree();
+        let other = create_node(runner);
+        c0.queue_execution();
+        assert!(matches!(
+            other.try_queue_execution(),
+            Err(QueueExecutionError::DifferentTrees(_))
+        ));
+
+        execute_queued();
+        assert_eq!(ran(), [c0]);
+    });
+}

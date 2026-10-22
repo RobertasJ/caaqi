@@ -113,8 +113,14 @@ pub fn store_cell<T: 'static>(value: T) -> StoredCell<T> {
 }
 
 impl<T: 'static> StoredCell<T> {
+    /// Fails with [`UnknownStored`] if the cell was removed. Unlike
+    /// borrowing, it doesn't touch the value.
+    pub(crate) fn check_exists(self) -> Result<(), UnknownStored> {
+        self.0.get(|_| ())
+    }
+
     /// The cell, shared out of the context.
-    pub(crate) fn shared(self) -> Result<Rc<RefCell<T>>, UnknownStored> {
+    fn shared(self) -> Result<Rc<RefCell<T>>, UnknownStored> {
         self.0.get(Rc::clone)
     }
 

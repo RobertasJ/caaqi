@@ -11,7 +11,7 @@ commit: && push
 
 [arg("pager", long, value="true")]
 test test_name="" pager="false":
-    cargo test -q {{ test_name }} -p caaqi --lib {{ if pager == "true" { " | less -R" } else { "" } }}
+    cargo test -q {{ test_name }} --workspace --lib {{ if pager == "true" { " | less -R" } else { "" } }}
 
 update-state:
     @jj git fetch
