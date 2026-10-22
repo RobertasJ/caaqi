@@ -1,9 +1,8 @@
 [workspace]
-members = ["caaqi-core", "caaqi-core-scoped", "caaqi"]
+members = ["caaqi-core", "caaqi"]
 resolver = "3"
 
 [workspace.dependencies]
 caaqi-core = { path = "caaqi-core" }
-caaqi-core-scoped = { path = "caaqi-core-scoped" }
 caaqi = { path = "caaqi" }
 thiserror = "2.0.21"
