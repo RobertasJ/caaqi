@@ -1,9 +1,17 @@
 use super::*;
-use crate::trace::StepId;
+use crate::time::Timeline;
+
+/// Runs `program` until it settles, and returns the machine and the result.
+fn settle<R: Clone + 'static>(program: impl Fn(&mut Machine) -> R + 'static) -> (Machine, R) {
+    let (mut machine, result) = Machine::new(program);
+    machine.run().unwrap();
+    let output = machine.read(result).unwrap().clone();
+    (machine, output)
+}
 
 /// The snapshots of the value's history, oldest first: index `i` is
 /// version `i`.
-fn versions<T: Clone + 'static>(machine: &Machine, value: Value<T>) -> Vec<T> {
+fn versions<T: Clone + 'static>(machine: &mut Machine, value: Value<T>) -> Vec<T> {
     machine
         .history(value)
         .unwrap()
@@ -12,118 +20,91 @@ fn versions<T: Clone + 'static>(machine: &Machine, value: Value<T>) -> Vec<T> {
         .collect()
 }
 
-fn reads(machine: &Machine, step: StepId) -> Vec<Access> {
-    machine.step(step).unwrap().reads().collect()
+/// A point from a timeline with more points than the machines in the
+/// tests, so it isn't on theirs.
+fn foreign_time() -> Time {
+    let mut other = Timeline::new();
+    (0..100).map(|_| other.push_back()).last().unwrap()
 }
 
-fn writes(machine: &Machine, step: StepId) -> Vec<Access> {
-    machine.step(step).unwrap().writes().collect()
-}
-
-fn access<T>(value: Value<T>, version: u64) -> Access {
-    Access {
-        value: value.id(),
-        version,
-    }
+/// A value from another machine, with more values than the machines in the
+/// tests, so its id isn't in them.
+fn foreign_value() -> Value<i32> {
+    settle(|machine| {
+        for _ in 0..5 {
+            machine.create_value(0).unwrap();
+        }
+        machine.create_value(0).unwrap()
+    })
+    .1
 }
 
 #[test]
-fn a_new_value_holds_its_initial_value_at_version_0() {
-    let mut machine = Machine::new();
-    let value = machine.create_value(String::from("a"));
+fn a_new_value_holds_its_initial_contents_at_version_0_at_its_point() {
+    let (mut machine, (value, after)) = settle(|machine| {
+        let value = machine.create_value(String::from("a")).unwrap();
+        (value, machine.now().unwrap())
+    });
 
     assert_eq!(machine.read(value).unwrap(), "a");
     assert_eq!(machine.version(value), Ok(0));
-    assert_eq!(versions(&machine, value), [String::from("a")]);
+    assert_eq!(versions(&mut machine, value), ["a"]);
     let created = machine.history(value).unwrap()[0].time();
-    assert_eq!(machine.timeline().last(), Some(created));
+    assert_eq!(value.id(), ValueId(created), "the id is the creation's point");
+    assert_eq!(machine.timeline().next(created), Ok(Some(after)));
 }
 
 #[test]
-fn declaring_a_value_writes_nothing() {
-    let mut machine = Machine::new();
-    let (step, declared) = machine.run_step_with_id(|machine| machine.declare_value::<i32>());
-    let declared = *machine.read(declared).unwrap();
+fn writes_add_versions_at_their_own_points() {
+    let (mut machine, value) = settle(|machine| {
+        let value = machine.create_value(1).unwrap();
+        machine.write(value, 2).unwrap();
+        machine.update(value, |value| *value *= 10).unwrap();
+        value
+    });
 
-    assert_eq!(machine.history(declared).unwrap().len(), 0);
-    let (start, end) = {
-        let step = machine.step(step).unwrap();
-        (step.start(), step.end().unwrap())
-    };
-    assert_eq!(machine.read_at(declared, end), Ok(None));
-    // Only the step's start, its result and its end: no point for the
-    // declaration, and no write recorded for it.
-    assert_eq!(machine.timeline().len(), 3);
-    assert!(!writes(&machine, step).contains(&access(declared, 0)));
-
-    machine.write(declared, 5).unwrap();
-    assert_eq!(versions(&machine, declared), [5]);
-    assert_eq!(machine.version(declared), Ok(0));
-    assert_eq!(machine.read_at(declared, start), Ok(None));
-}
-
-#[test]
-#[should_panic(expected = "only written values are handed out")]
-fn reading_a_value_before_its_first_write_breaks_an_invariant() {
-    let mut machine = Machine::new();
-    let declared = machine.declare_value::<i32>();
-    let _ = machine.read(declared);
-}
-
-#[test]
-fn a_panicking_step_leaves_no_result_value() {
-    let mut machine = Machine::new();
-    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        machine.run_step(|_| -> i32 { panic!("boom") })
-    }));
-
-    assert!(panicked.is_err());
-    assert!(machine.values.histories.is_empty());
-}
-
-#[test]
-fn writes_add_versions_at_the_end_of_the_timeline() {
-    let mut machine = Machine::new();
-    let value = machine.create_value(1);
-    machine.write(value, 2).unwrap();
-    machine.update(value, |value| *value *= 10).unwrap();
-
-    assert_eq!(*machine.read(value).unwrap(), 20);
+    assert_eq!(machine.read(value), Ok(&20));
     assert_eq!(machine.version(value), Ok(2));
-    assert_eq!(versions(&machine, value), [1, 2, 20]);
-
+    assert_eq!(versions(&mut machine, value), [1, 2, 20]);
     let times: Vec<_> = machine
         .history(value)
         .unwrap()
         .iter()
-        .map(|e| e.time())
+        .map(HistoryEntry::time)
         .collect();
-    assert_eq!(machine.timeline().times().collect::<Vec<_>>(), times);
+    // The writes are the creation and the next two events.
+    let all: Vec<_> = machine.timeline().times().collect();
+    assert_eq!(times, all[1..4]);
 }
 
 #[test]
 fn values_keep_separate_histories() {
-    let mut machine = Machine::new();
-    let a = machine.create_value(1);
-    let b = machine.create_value("b");
-    machine.write(a, 2).unwrap();
+    let (mut machine, (a, b)) = settle(|machine| {
+        let a = machine.create_value(1).unwrap();
+        let b = machine.create_value("b").unwrap();
+        machine.write(a, 2).unwrap();
+        (a, b)
+    });
 
-    assert_eq!(versions(&machine, a), [1, 2]);
-    assert_eq!(versions(&machine, b), ["b"]);
+    assert_eq!(versions(&mut machine, a), [1, 2]);
+    assert_eq!(versions(&mut machine, b), ["b"]);
 }
 
 #[test]
-fn read_at_returns_the_newest_write_at_or_before_the_time() {
-    let mut machine = Machine::new();
-    let before_creation = machine.timeline.push_back();
-    let value = machine.create_value(1);
-    let between = machine.timeline.push_back();
-    machine.write(value, 2).unwrap();
-    let written = machine.history(value).unwrap()[1].time();
-    let after = machine.timeline.push_back();
-
-    assert_eq!(machine.read_at(value, before_creation), Ok(None));
+fn a_read_sees_the_newest_write_at_or_before_it() {
+    let (mut machine, (value, times)) = settle(|machine| {
+        let before = machine.now().unwrap();
+        let value = machine.create_value(1).unwrap();
+        let between = machine.now().unwrap();
+        machine.write(value, 2).unwrap();
+        let after = machine.now().unwrap();
+        (value, [before, between, after])
+    });
+    let [before, between, after] = times;
     let created = machine.history(value).unwrap()[0].time();
+    let written = machine.history(value).unwrap()[1].time();
+
+    assert_eq!(machine.read_at(value, before), Ok(None));
     assert_eq!(machine.read_at(value, created), Ok(Some(&1)));
     assert_eq!(machine.read_at(value, between), Ok(Some(&1)));
     assert_eq!(machine.read_at(value, written), Ok(Some(&2)));
@@ -131,169 +112,209 @@ fn read_at_returns_the_newest_write_at_or_before_the_time() {
 }
 
 #[test]
-fn read_at_a_step_returns_what_it_saw() {
-    let mut machine = Machine::new();
-    let value = machine.create_value(0);
-    let mut steps = Vec::new();
-    for _ in 0..5 {
-        let (step, seen) = machine.run_step_with_id(|machine| {
-            let seen = *machine.read(value).unwrap();
-            machine.write(value, seen + 1).unwrap();
-            seen
-        });
-        steps.push((step, seen));
-    }
-
-    for (step, seen) in steps {
-        let seen = *machine.read(seen).unwrap();
-        let start = machine.step(step).unwrap().start();
-        assert_eq!(machine.read_at(value, start), Ok(Some(&seen)));
-        let end = machine.step(step).unwrap().end().unwrap();
-        assert_eq!(machine.read_at(value, end), Ok(Some(&(seen + 1))));
-    }
-}
-
-#[test]
-fn reads_and_writes_are_recorded_with_their_versions() {
-    let mut machine = Machine::new();
-    let value = machine.create_value(1);
-    let (step, done) = machine.run_step_with_id(|machine| {
-        machine.read(value).unwrap();
-        machine.write(value, 2).unwrap();
-        machine.read(value).unwrap();
-        machine.update(value, |value| *value += 1).unwrap();
+fn reads_during_a_run_see_the_value_so_far() {
+    let (_, seen) = settle(|machine| {
+        let value = machine.create_value(0).unwrap();
+        (1..4)
+            .map(|n| {
+                let seen = *machine.read(value).unwrap();
+                machine.write(value, n).unwrap();
+                seen
+            })
+            .collect::<Vec<_>>()
     });
 
-    assert_eq!(reads(&machine, step), [access(value, 0), access(value, 1)]);
-    // The step also wrote its own result.
-    assert_eq!(
-        writes(&machine, step),
-        [access(value, 1), access(value, 2), access(done, 0)]
-    );
+    assert_eq!(seen, [0, 1, 2]);
 }
 
 #[test]
-fn update_records_a_read_of_the_version_it_copied() {
-    let mut machine = Machine::new();
-    let value = machine.create_value(1);
-    let (step, done) = machine.run_step_with_id(|machine| {
-        machine.update(value, |value| *value += 1).unwrap();
+fn a_deleted_value_can_t_be_read_or_written() {
+    let (mut machine, (value, alive, errors)) = settle(|machine| {
+        let value = machine.create_value(1).unwrap();
+        let alive = machine.now().unwrap();
+        machine.delete(value).unwrap();
+        let errors = (
+            machine.read(value).unwrap_err(),
+            machine.write(value, 2).unwrap_err(),
+            machine.update(value, |_| ()).unwrap_err(),
+            machine.delete(value).unwrap_err(),
+            machine.version(value).unwrap_err(),
+        );
+        (value, alive, errors)
     });
-
-    assert_eq!(reads(&machine, step), [access(value, 0)]);
-    assert_eq!(writes(&machine, step), [access(value, 1), access(done, 0)]);
-}
-
-#[test]
-fn reading_the_same_version_twice_records_it_once() {
-    let mut machine = Machine::new();
-    let value = machine.create_value(1);
-    let (step, _) = machine.run_step_with_id(|machine| {
-        machine.read(value).unwrap();
-        machine.read(value).unwrap();
-    });
-
-    assert_eq!(reads(&machine, step), [access(value, 0)]);
-}
-
-#[test]
-fn creating_a_value_in_a_step_records_a_write() {
-    let mut machine = Machine::new();
-    let (step, result) = machine.run_step_with_id(|machine| machine.create_value(1));
-    let value = *machine.read(result).unwrap();
+    let deleted = DeletedValue(value.id());
 
     assert_eq!(
-        writes(&machine, step),
-        [access(result, 0), access(value, 0)]
+        errors,
+        (
+            deleted.into(),
+            deleted.into(),
+            deleted.into(),
+            deleted.into(),
+            deleted.into()
+        )
     );
-}
-
-#[test]
-fn read_at_records_the_version_it_returned() {
-    let mut machine = Machine::new();
-    let early = machine.timeline.push_back();
-    let value = machine.create_value(1);
-    let created = machine.history(value).unwrap()[0].time();
-    machine.write(value, 2).unwrap();
-
-    let (step, _) = machine.run_step_with_id(|machine| {
-        machine.read_at(value, created).unwrap();
-        // Before the value existed: nothing seen, nothing recorded.
-        machine.read_at(value, early).unwrap();
-    });
-
-    assert_eq!(reads(&machine, step), [access(value, 0)]);
-}
-
-#[test]
-fn inspecting_is_not_recorded() {
-    let mut machine = Machine::new();
-    let value = machine.create_value(1);
-    let (step, _) = machine.run_step_with_id(|machine| {
-        machine.version(value).unwrap();
-        machine.history(value).unwrap();
-    });
-
-    assert_eq!(reads(&machine, step), []);
-}
-
-#[test]
-fn reads_and_writes_outside_steps_are_not_recorded() {
-    let mut machine = Machine::new();
-    let value = machine.create_value(1);
-    machine.read(value).unwrap();
-    machine.write(value, 2).unwrap();
-    let (step, done) = machine.run_step_with_id(|_| ());
-
-    assert_eq!(reads(&machine, step), []);
-    // Only the step's own result.
-    assert_eq!(writes(&machine, step), [access(done, 0)]);
-    // The write still made a version.
-    assert_eq!(versions(&machine, value), [1, 2]);
+    // Its past can still be read, and inspected.
+    assert_eq!(machine.read_at(value, alive), Ok(Some(&1)));
+    let last = machine.timeline().last().unwrap();
+    assert_eq!(machine.read_at(value, last), Err(deleted.into()));
+    assert_eq!(versions(&mut machine, value), [1]);
 }
 
 #[test]
 fn an_unknown_value_fails() {
-    let mut other = Machine::new();
-    let value = other.create_value(1);
-    let mut machine = Machine::new();
-    let unknown = UnknownValue(value.id());
+    let unknown = foreign_value();
+    let (mut machine, errors) = settle(move |machine| {
+        let now = machine.now().unwrap();
+        (
+            machine.write(unknown, 2).unwrap_err(),
+            machine.update(unknown, |_| ()).unwrap_err(),
+            machine.delete(unknown).unwrap_err(),
+            machine.write_at(unknown, now, 2).unwrap_err(),
+        )
+    });
+    let error = UnknownValue(unknown.id());
 
-    assert_eq!(machine.read(value), Err(unknown));
     assert_eq!(
-        machine.read_at(value, other.timeline().last().unwrap()),
-        Err(unknown.into())
+        errors,
+        (error.into(), error.into(), error.into(), error.into())
     );
-    assert_eq!(machine.write(value, 2), Err(unknown));
-    assert_eq!(machine.update(value, |_| ()), Err(unknown));
-    assert_eq!(machine.version(value), Err(unknown));
-    assert_eq!(machine.history(value).unwrap_err(), unknown);
-    assert!(
-        machine.timeline().is_empty(),
-        "a failed write adds no point"
-    );
+    assert_eq!(machine.read(unknown), Err(error.into()));
+    let first = machine.timeline().first().unwrap();
+    assert_eq!(machine.read_at(unknown, first), Err(error.into()));
+    assert_eq!(machine.version(unknown), Err(error.into()));
+    assert_eq!(machine.history(unknown).unwrap_err(), error);
 }
 
 #[test]
 fn a_handle_of_another_type_fails() {
-    let mut other = Machine::new();
-    let text = other.create_value(String::new());
-    let mut machine = Machine::new();
-    machine.create_value(1);
+    let (mut machine, number) = settle(|machine| machine.create_value(1).unwrap());
+    let text: Value<String> = Value::new(number.id());
 
-    // The same slot holds an `i32` here.
-    assert_eq!(machine.read(text), Err(UnknownValue(text.id())));
+    assert_eq!(machine.read(text), Err(UnknownValue(text.id()).into()));
 }
 
 #[test]
 fn read_at_an_unknown_time_fails() {
-    let mut machine = Machine::new();
-    let value = machine.create_value(1);
-    let removed = machine.timeline.push_back();
-    machine.timeline.remove(removed).unwrap();
+    let (mut machine, (value, start)) = settle(|machine| {
+        (
+            machine.create_value(1).unwrap(),
+            machine.timeline().first().unwrap(),
+        )
+    });
+    let unknown = foreign_time();
 
     assert_eq!(
-        machine.read_at(value, removed),
-        Err(UnknownTime(removed).into())
+        machine.read_at(value, unknown),
+        Err(UnknownTime(unknown).into())
     );
+    // The program's start is a point, before the value's creation.
+    assert_eq!(machine.read_at(value, start), Ok(None));
+}
+
+#[test]
+fn the_result_is_unwritten_before_the_first_run() {
+    let (mut machine, result) = Machine::new(|_| 1);
+    let unwritten = Unwritten(result.id());
+
+    assert_eq!(machine.read(result), Err(unwritten.into()));
+    assert_eq!(machine.version(result), Err(unwritten.into()));
+    assert_eq!(machine.history(result).map(<[_]>::len), Ok(0));
+    let start = machine.timeline().first().unwrap();
+    assert_eq!(machine.read_at(result, start), Ok(None));
+}
+
+#[test]
+fn write_at_needs_an_earlier_event_of_this_run() {
+    let (_, errors) = settle(|machine| {
+        let start = machine.timeline().first().unwrap();
+        let value = machine.create_value(1).unwrap();
+        // The program's start isn't an event.
+        let start = machine.write_at(value, start, 2).unwrap_err();
+        let foreign = machine.write_at(value, foreign_time(), 2).unwrap_err();
+        (start, foreign)
+    });
+
+    assert!(matches!(errors.0, WriteAtError::NotInThePast(_)));
+    assert!(matches!(errors.1, WriteAtError::NotInThePast(_)));
+}
+
+#[test]
+fn write_at_needs_the_value_to_exist_at_the_point() {
+    let (_, (value, other, early, errors)) = settle(|machine| {
+        let early = machine.now().unwrap();
+        let value = machine.create_value(1).unwrap();
+        let other = machine.create_value(1).unwrap();
+        machine.delete(other).unwrap();
+        let late = machine.now().unwrap();
+        let errors = (
+            machine.write_at(value, early, 2).unwrap_err(),
+            machine.write_at(other, late, 2).unwrap_err(),
+        );
+        (value, other, early, errors)
+    });
+
+    assert_eq!(
+        errors.0,
+        NotYetCreated {
+            value: value.id(),
+            time: early
+        }
+        .into()
+    );
+    assert_eq!(errors.1, DeletedValue(other.id()).into());
+}
+
+#[test]
+fn write_at_can_go_before_a_later_deletion() {
+    let (mut machine, (value, alive)) = settle(|machine| {
+        let value = machine.create_value(1).unwrap();
+        let alive = machine.now().unwrap();
+        let seen = *machine.read(value).unwrap();
+        machine.delete(value).unwrap();
+        if seen == 1 {
+            machine.write_at(value, alive, 2).unwrap();
+        }
+        (value, alive)
+    });
+
+    assert_eq!(versions(&mut machine, value), [1, 2]);
+    let written = machine.history(value).unwrap()[1].time();
+    assert_eq!(machine.timeline().next(alive), Ok(Some(written)));
+    assert_eq!(machine.read_at(value, written), Ok(Some(&2)));
+}
+
+#[test]
+fn write_at_its_creation_point_is_in_the_past() {
+    let (mut machine, value) = settle(|machine| {
+        let value = machine.create_value(1).unwrap();
+        if *machine.read(value).unwrap() == 1 {
+            let created = machine.history(value).unwrap()[0].time();
+            machine.write_at(value, created, 5).unwrap();
+        }
+        value
+    });
+
+    assert_eq!(versions(&mut machine, value), [1, 5]);
+}
+
+#[test]
+fn bootstrapped_contents_need_no_clone() {
+    /// Not `Clone`.
+    #[derive(Debug, PartialEq)]
+    struct Token(u32);
+
+    let (mut machine, result) = Machine::new(|machine| {
+        let token = machine.create_value(Token(0)).unwrap();
+        let mark = machine.now().unwrap();
+        if machine.read(token).unwrap().0 == 0 {
+            machine.write_at(token, mark, Token(7)).unwrap();
+        }
+        token
+    });
+    machine.run().unwrap();
+    machine.run().unwrap();
+    let token = *machine.read(result).unwrap();
+
+    assert_eq!(machine.read(token), Ok(&Token(7)));
 }

@@ -1,16 +1,21 @@
-//! The machine's timeline, scoped: points that compare in O(1).
+//! The machine's timeline, scoped: points that compare in O(1), and the
+//! current point.
 //!
-//! Only the machine adds points, as steps run and values are written, so
-//! this module only reads the timeline. A [`Time`] is `PartialOrd` by
-//! timeline order:
+//! Only the machine adds and removes points, as events happen, so this
+//! module only reads the timeline; reading it isn't an event. [`now`] is
+//! one: it returns the current point, which a write into the past
+//! ([`Value::write_at`](crate::value::Value::write_at)) needs. A [`Time`] is
+//! `PartialOrd` by timeline order:
 //!
 //! ```
 //! use caaqi::prelude::*;
 //!
-//! scope(&mut Machine::new(), || {
-//!     let (step, _) = run_step_with_id(|| ());
-//!     assert!(step.start() < step.end().unwrap());
+//! let (mut machine, ordered) = new_machine(|| {
+//!     let (a, b) = (now(), now());
+//!     a < b
 //! });
+//! machine.run().unwrap();
+//! assert!(scope(&mut machine, || ordered.get()));
 //! ```
 
 use std::cmp::Ordering;
@@ -18,7 +23,7 @@ use std::cmp::Ordering;
 use caaqi_core::time::Time as CoreTime;
 pub use caaqi_core::time::UnknownTime;
 
-use crate::machine::with_machine;
+use crate::machine::{NotRunning, with_machine};
 
 /// A point on the machine's timeline. `Copy`, and cheap to compare.
 ///
@@ -50,7 +55,21 @@ impl PartialOrd for Time {
     }
 }
 
-/// The first point, or `None` if the timeline is empty.
+/// Like [`try_now`], but panics on error.
+#[track_caller]
+pub fn now() -> Time {
+    try_now().unwrap_or_else(|error| panic!("{error}"))
+}
+
+/// The current point: an event that returns its own point.
+///
+/// Fails with [`NotRunning`] outside a run.
+pub fn try_now() -> Result<Time, NotRunning> {
+    with_machine(|machine| machine.now().map(Time))
+}
+
+/// The first point, the program's start, or `None` if the timeline is
+/// empty.
 pub fn first() -> Option<Time> {
     with_machine(|machine| machine.timeline().first().map(Time))
 }

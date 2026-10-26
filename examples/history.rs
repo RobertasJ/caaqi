@@ -1,57 +1,55 @@
-//! A run recorded by caaqi, then inspected.
+//! A program that rewrites its own past, then its history, inspected.
 //!
-//! A small shop runs as steps: each order reads the stock and writes it
-//! back. Which steps run depends on the stock (a decision), so a restock
-//! step appears inside the order that ran out. Afterwards, the stock can be
-//! read as each step saw it, and each step lists what it read and wrote.
+//! A small shop opens with some stock, and customers buy from it. When the
+//! stock runs short, the shop restocks at the opening, with a write into
+//! the past: everything after the opening is wiped, and the day plays out
+//! again with more stock, until nobody is turned away. Afterwards, the
+//! stock's history shows the day as it finally happened.
 //!
 //! Run with `just example history`.
 
 use caaqi::prelude::*;
 
 fn main() {
-    let mut machine = Machine::new();
-    scope(&mut machine, || {
+    let (mut machine, day) = new_machine(|| {
         let stock = create_value(3);
+        let opening = now();
+        // Read after the opening, so it sees a restock written there.
+        let opening_stock = stock.get();
 
+        let mut sold = Vec::new();
+        let mut short = 0;
         for (customer, amount) in [("Ada", 2), ("Grace", 2), ("Alan", 1)] {
-            run_step(|| {
-                if stock.get() < amount {
-                    // Steps run here are inside this order's section.
-                    run_step(|| stock.update(|stock| *stock += 5));
-                }
-                stock.update(|stock| *stock -= amount);
-                println!("{customer} bought {amount}, {} left", stock.get());
-            });
+            let left = stock.get();
+            if left >= amount {
+                stock.set(left - amount);
+                sold.push(customer);
+            } else {
+                short += amount;
+            }
         }
 
-        println!("\nthe run, step by step:");
-        for (number, step) in steps().into_iter().enumerate() {
-            let depth = std::iter::successors(step.parent(), |parent| parent.parent()).count();
-            let seen = stock.get_at(step.start()).unwrap();
-            let left = stock.get_at(step.end().unwrap()).unwrap();
-            println!(
-                "{:indent$}step {number}: saw {seen}, left {left}, read {:?}, wrote {:?}",
-                "",
-                versions(stock, step.reads()),
-                versions(stock, step.writes()),
-                indent = depth * 2,
-            );
+        // The program decides whether the past needs rewriting: only when
+        // someone was turned away.
+        if short > 0 {
+            stock.write_at(opening, opening_stock + short);
         }
+        (stock, opening, sold)
+    });
+
+    let runs = machine.run().unwrap();
+    println!("the day settled after {runs} runs");
+
+    scope(&mut machine, || {
+        let (stock, opening, sold) = day.get();
+        println!("sold to: {}", sold.join(", "));
+        println!("stock at the opening: {}", stock.get_at(opening).unwrap());
+        println!("stock right after it: {}", stock.get_at(opening.next().unwrap()).unwrap());
+        println!("stock at closing: {}", stock.get());
 
         println!("\nthe stock's history:");
         for (version, entry) in stock.history().into_iter().enumerate() {
             println!("  version {version}: {}", entry.snapshot);
         }
     });
-}
-
-/// The versions of `stock` among the accesses. The others are the results
-/// of steps, which are values too.
-fn versions(stock: Value<i32>, accesses: Vec<Access>) -> Vec<u64> {
-    accesses
-        .iter()
-        .filter(|access| access.value == stock.id())
-        .map(|access| access.version)
-        .collect()
 }

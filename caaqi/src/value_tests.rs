@@ -1,20 +1,42 @@
-use caaqi_core::{machine::Machine, time::UnknownTime};
+use caaqi_core::time::UnknownTime;
 
 use super::*;
 use crate::{
-    machine::scope,
-    time::last,
-    trace::{Access, run_step_with_id},
+    machine::{Machine, new_machine, scope},
+    time::{last, now},
 };
+
+/// Runs `program` until it settles, and returns the machine and the result.
+fn settle<R: Clone + 'static>(program: impl Fn() -> R + 'static) -> (Machine, R) {
+    let (mut machine, result) = new_machine(program);
+    machine.run().unwrap();
+    let output = scope(&mut machine, || result.get());
+    (machine, output)
+}
+
+/// A value from a machine with more values than the ones in the tests, so
+/// it isn't in them.
+fn foreign_value() -> Value<i32> {
+    settle(|| {
+        for _ in 0..100 {
+            create_value(0);
+        }
+        create_value(0)
+    })
+    .1
+}
 
 #[test]
 fn get_set_and_update_change_the_value() {
-    scope(&mut Machine::new(), || {
+    let (mut machine, value) = settle(|| {
         let value = create_value(1);
         assert_eq!(value.get(), 1);
-
         value.set(2);
         value.update(|value| *value *= 10);
+        value
+    });
+
+    scope(&mut machine, || {
         assert_eq!(value.get(), 20);
         assert_eq!(value.with(|value| value + 1), 21);
         assert_eq!(value.version(), 2);
@@ -23,118 +45,182 @@ fn get_set_and_update_change_the_value() {
 
 #[test]
 fn history_lists_every_write() {
-    scope(&mut Machine::new(), || {
+    let (mut machine, (value, created, written)) = settle(|| {
         let value = create_value("a");
-        let created = last().unwrap();
+        let created = now().prev().unwrap();
         value.set("b");
-        let written = last().unwrap();
-
-        let expected = [
-            HistoryEntry {
-                time: created,
-                snapshot: "a",
-            },
-            HistoryEntry {
-                time: written,
-                snapshot: "b",
-            },
-        ];
-        assert_eq!(value.history(), expected);
+        let written = now().prev().unwrap();
+        (value, created, written)
     });
+
+    let expected = [
+        HistoryEntry {
+            time: created,
+            snapshot: "a",
+        },
+        HistoryEntry {
+            time: written,
+            snapshot: "b",
+        },
+    ];
+    assert_eq!(scope(&mut machine, || value.history()), expected);
 }
 
 #[test]
-fn get_at_returns_what_a_step_saw() {
-    scope(&mut Machine::new(), || {
+fn get_at_returns_what_a_read_there_saw() {
+    let (mut machine, (value, marks)) = settle(|| {
         let value = create_value(0);
-        let runs: Vec<_> = (0..3)
-            .map(|_| {
-                run_step_with_id(|| {
-                    let seen = value.get();
-                    value.set(seen + 1);
-                    seen
-                })
+        let marks: Vec<_> = (1..4)
+            .map(|n| {
+                let mark = now();
+                value.set(n);
+                (mark, n - 1)
             })
             .collect();
+        (value, marks)
+    });
 
-        for (step, seen) in runs {
-            let seen = seen.get();
-            assert_eq!(value.get_at(step.start()), Some(seen));
-            assert_eq!(value.get_at(step.end().unwrap()), Some(seen + 1));
+    scope(&mut machine, || {
+        for (mark, seen) in marks {
+            assert_eq!(value.get_at(mark), Some(seen));
         }
     });
 }
 
 #[test]
 fn get_at_before_creation_is_none() {
-    scope(&mut Machine::new(), || {
-        let (step, _) = run_step_with_id(|| ());
-        let value = create_value(1);
+    let (mut machine, (before, value)) = settle(|| (now(), create_value(1)));
+    scope(&mut machine, || assert_eq!(value.get_at(before), None));
+}
 
-        assert_eq!(value.get_at(step.start()), None);
+#[test]
+fn write_at_writes_into_the_past_and_the_program_goes_on_from_there() {
+    let (mut machine, result) = new_machine(|| {
+        let width = create_value::<Option<f32>>(None);
+        let parent = now();
+        let position = width.get().map_or(0.0, |width| (200.0 - width) / 2.0);
+        if width.get() != Some(50.0) {
+            width.write_at(parent, Some(50.0));
+        }
+        (width, parent, position)
+    });
+
+    assert_eq!(machine.run(), Ok(2));
+    scope(&mut machine, || {
+        let (width, parent, position) = result.get();
+        assert_eq!(position, 75.0);
+        let written = width.history()[1].time;
+        assert_eq!(parent.next(), Some(written));
+        assert_eq!(width.get_at(parent), Some(None));
+        assert_eq!(width.get_at(written), Some(Some(50.0)));
     });
 }
 
 #[test]
-fn reads_and_writes_are_recorded_on_the_current_step() {
-    scope(&mut Machine::new(), || {
+fn a_deleted_value_can_t_be_read_or_written() {
+    let (mut machine, (value, alive, errors)) = settle(|| {
         let value = create_value(1);
-        let (step, done) = run_step_with_id(|| {
-            value.with(|_| ());
-            value.update(|value| *value += 1);
-        });
+        let alive = now();
+        value.delete();
+        let errors = (
+            value.try_get().unwrap_err(),
+            value.try_set(2).unwrap_err(),
+            value.try_update(|_| ()).unwrap_err(),
+            value.try_delete().unwrap_err(),
+            value.try_version().unwrap_err(),
+        );
+        (value, alive, errors)
+    });
+    let deleted = DeletedValue(value.id());
 
-        let access = |version| Access {
-            value: value.id(),
-            version,
-        };
-        // `update` read version 0 too, to copy it.
-        assert_eq!(step.reads(), [access(0)]);
-        // The step also wrote its own result.
-        let done = Access {
-            value: done.id(),
-            version: 0,
-        };
-        assert_eq!(step.writes(), [access(1), done]);
+    assert_eq!(
+        errors,
+        (
+            deleted.into(),
+            deleted.into(),
+            deleted.into(),
+            deleted.into(),
+            deleted.into()
+        )
+    );
+    scope(&mut machine, || {
+        assert_eq!(value.get_at(alive), Some(1));
+        assert_eq!(value.history().len(), 1);
     });
 }
 
-/// A value from a machine with more values than the one in scope, so it
-/// isn't in that one.
-fn foreign_value() -> Value<i32> {
-    scope(&mut Machine::new(), || {
-        create_value(0);
-        create_value(0)
-    })
+#[test]
+fn changes_outside_a_run_fail() {
+    let (mut machine, value) = settle(|| create_value(1));
+
+    scope(&mut machine, || {
+        let time = last().unwrap();
+        assert_eq!(try_create_value(1), Err(NotRunning));
+        assert_eq!(value.try_set(2), Err(NotRunning.into()));
+        assert_eq!(value.try_update(|_| ()), Err(NotRunning.into()));
+        assert_eq!(value.try_delete(), Err(NotRunning.into()));
+        assert_eq!(value.try_write_at(time, 2), Err(NotRunning.into()));
+        // Reading still works.
+        assert_eq!(value.get(), 1);
+    });
 }
 
 #[test]
 fn try_methods_fail_on_an_unknown_value() {
     let unknown = foreign_value();
-    scope(&mut Machine::new(), || {
-        let known_time = create_value(0).history()[0].time;
-        let error = UnknownValue(unknown.id());
+    let (mut machine, (known_time, errors)) = settle(move || {
+        let known_time = now();
+        let errors = (
+            unknown.try_set(1).unwrap_err(),
+            unknown.try_update(|_| ()).unwrap_err(),
+            unknown.try_delete().unwrap_err(),
+            unknown.try_write_at(known_time, 1).unwrap_err(),
+        );
+        (known_time, errors)
+    });
+    let error = UnknownValue(unknown.id());
 
-        assert_eq!(unknown.try_get(), Err(error));
-        assert_eq!(unknown.try_with(|_| ()), Err(error));
+    assert_eq!(
+        errors,
+        (error.into(), error.into(), error.into(), error.into())
+    );
+    scope(&mut machine, || {
+        assert_eq!(unknown.try_get(), Err(error.into()));
+        assert_eq!(unknown.try_with(|_| ()), Err(error.into()));
         assert_eq!(unknown.try_get_at(known_time), Err(error.into()));
-        assert_eq!(unknown.try_set(1), Err(error));
-        assert_eq!(unknown.try_update(|_| ()), Err(error));
-        assert_eq!(unknown.try_version(), Err(error));
+        assert_eq!(unknown.try_version(), Err(error.into()));
         assert_eq!(unknown.try_history(), Err(error));
     });
 }
 
 #[test]
-fn get_at_an_unknown_time_fails() {
-    let unknown_time = scope(&mut Machine::new(), || {
-        for _ in 0..3 {
-            create_value(0);
-        }
-        last().unwrap()
+fn try_write_at_fails_before_the_value_exists() {
+    let (_, (value, early, error)) = settle(|| {
+        let early = now();
+        let value = create_value(1);
+        let error = value.try_write_at(early, 2).unwrap_err();
+        (value, early, error)
     });
-    scope(&mut Machine::new(), || {
-        let value = create_value(0);
+
+    let expected = NotYetCreated {
+        value: value.id(),
+        time: early.into(),
+    };
+    assert_eq!(error, expected.into());
+}
+
+#[test]
+fn get_at_an_unknown_time_fails() {
+    let unknown_time = settle(|| {
+        for _ in 0..100 {
+            now();
+        }
+        now()
+    })
+    .1;
+    let (mut machine, value) = settle(|| create_value(0));
+
+    scope(&mut machine, || {
         assert_eq!(
             value.try_get_at(unknown_time),
             Err(UnknownTime(unknown_time.into()).into())
@@ -146,16 +232,26 @@ fn get_at_an_unknown_time_fails() {
 #[should_panic(expected = "isn't in the machine")]
 fn get_panics_on_an_unknown_value() {
     let unknown = foreign_value();
-    scope(&mut Machine::new(), || {
+    let (mut machine, _) = settle(|| ());
+    scope(&mut machine, || {
         unknown.get();
+    });
+}
+
+#[test]
+#[should_panic(expected = "isn't running")]
+fn create_value_panics_outside_a_run() {
+    let (mut machine, _) = settle(|| ());
+    scope(&mut machine, || {
+        create_value(1);
     });
 }
 
 #[test]
 #[should_panic(expected = "no machine in scope")]
 fn with_panics_if_its_closure_uses_the_machine() {
-    scope(&mut Machine::new(), || {
-        let value = create_value(0);
+    let (mut machine, value) = settle(|| create_value(0));
+    scope(&mut machine, || {
         value.with(|_| value.get());
     });
 }

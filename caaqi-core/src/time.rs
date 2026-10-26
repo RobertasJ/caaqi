@@ -2,10 +2,11 @@
 //! between any two existing points.
 //!
 //! Each [`Machine`](crate::machine::Machine) has one timeline, the order of
-//! its run, and hands it out read-only with
+//! its runs' events, and hands it out read-only with
 //! [`timeline`](crate::machine::Machine::timeline): only the machine adds
-//! points, as steps run and values are written. A [`Timeline`] is also a
-//! plain data structure of its own:
+//! and removes points, as events happen and writes into the past wipe what
+//! came after them. A [`Timeline`] is also a plain data structure of its
+//! own:
 //!
 //! ```
 //! use caaqi_core::time::Timeline;

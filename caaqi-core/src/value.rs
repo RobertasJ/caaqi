@@ -1,57 +1,58 @@
 //! Values: state inside the timeline.
 //!
-//! A value is reached through a [`Value<T>`] handle. Reads and writes are
-//! recorded on the [current step](Machine::current_step), as the edges of
-//! the dependency graph; outside any step, they aren't recorded.
+//! A value is reached through a [`Value<T>`] handle. Its identity (its
+//! creation) and its contents (its writes) are separate: the creation's
+//! point is the value's id and holds its initial contents, and every later
+//! write is an event of its own, at its own point. Each value keeps its
+//! history: one [`HistoryEntry`] per write (counting the initial contents),
+//! with the write's point and a snapshot of the value. So the value as seen
+//! at any point is the newest write at or before it, which is what
+//! [`read_at`](Machine::read_at) returns. During a run, every write lands at
+//! the current point, the newest one, so the history stays sorted.
 //!
-//! Each value keeps its history: one [`HistoryEntry`] per write, with the
-//! point the write added to the timeline and a snapshot of the value. So the
-//! value as seen at any point is the newest write at or before it, and
-//! [`read_at`](Machine::read_at) returns what a step there saw. Writes
-//! always add their point at the end of the timeline, so the history stays
-//! sorted.
+//! A write's version is its index in the history: 0 for the contents the
+//! value was created with, then one more per write.
 //!
-//! A write's version is its index in the history: 0 for the value's
-//! first write, then one more per write.
-//!
-//! A value's identity and its contents are owned separately. A write belongs
-//! to the step whose run decides what it holds, and the value itself belongs
-//! to the section whose rewrite would end its lifetime. Usually both are the
-//! step that creates the value, but a step's result is declared by the
-//! parent and written by the step: see
-//! [`run_step`](Machine::run_step).
+//! Creating, writing and deleting work only during a run. Reading and
+//! inspecting work at any time, and during a run they're events too.
 //!
 //! ```
 //! use caaqi_core::prelude::*;
 //!
-//! let mut machine = Machine::new();
-//! let count = machine.create_value(1);
-//! let (step, _) = machine.run_step_with_id(|machine| {
+//! let (mut machine, result) = Machine::new(|machine| {
+//!     let count = machine.create_value(1).unwrap();
 //!     let doubled = *machine.read(count).unwrap() * 2;
 //!     machine.write(count, doubled).unwrap();
+//!     count
 //! });
+//! machine.run().unwrap();
 //!
-//! assert_eq!(*machine.read(count).unwrap(), 2);
-//! // At the step's start, the value hadn't been written yet.
-//! let start = machine.step(step).unwrap().start();
-//! assert_eq!(machine.read_at(count, start).unwrap(), Some(&1));
+//! let count = *machine.read(result).unwrap();
+//! assert_eq!(machine.read(count), Ok(&2));
+//! // At its creation, the value held 1.
+//! let created = machine.history(count).unwrap()[0].time();
+//! assert_eq!(machine.read_at(count, created), Ok(Some(&1)));
 //! ```
 
-use std::{any::Any, cmp::Ordering, fmt, hash, marker::PhantomData};
-
-use slotmap::SlotMap;
-
-use crate::{
-    machine::Machine,
-    time::{Time, UnknownTime},
-    trace::Access,
+use std::{
+    any::Any, cell::RefCell, cmp::Ordering, collections::HashMap, convert::Infallible, fmt, hash,
+    marker::PhantomData, rc::Rc,
 };
 
-slotmap::new_key_type! {
-    /// A value, whatever its type: what [`Access`] records. Only valid in
-    /// the [`Machine`] that created it.
-    pub struct ValueId;
-}
+use crate::{
+    event::{NotRunning, Undo},
+    machine::Machine,
+    time::{Time, UnknownTime},
+};
+
+/// A value, whatever its type. Only valid in the [`Machine`] that created
+/// it.
+///
+/// Under the hood, it's the point of the value's creation, so a rerun that
+/// creates the value again at the same point gives back the same id, and
+/// handles from earlier runs stay valid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ValueId(pub(crate) Time);
 
 /// A handle to a value of type `T`. `Copy` whatever `T` is.
 ///
@@ -64,7 +65,14 @@ pub struct Value<T> {
 }
 
 impl<T> Value<T> {
-    /// The value's untyped id, as recorded in [`Access`]es.
+    fn new(id: ValueId) -> Value<T> {
+        Value {
+            id,
+            _type: PhantomData,
+        }
+    }
+
+    /// The value's untyped id.
     pub fn id(self) -> ValueId {
         self.id
     }
@@ -98,10 +106,46 @@ impl<T> fmt::Debug for Value<T> {
     }
 }
 
-/// The value isn't in this machine.
+/// The value isn't in this machine: it was never created here, its creation
+/// was undone, or the handle has another type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("{0:?} isn't in the machine")]
 pub struct UnknownValue(pub ValueId);
+
+/// The value was deleted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("{0:?} was deleted")]
+pub struct DeletedValue(pub ValueId);
+
+/// The value has no contents yet. Only the program's result value is ever
+/// in this state: before the first run writes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("{0:?} hasn't been written yet")]
+pub struct Unwritten(pub ValueId);
+
+/// A write into the past needs the point of an earlier event in this run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("{0:?} isn't the point of an earlier event in this run")]
+pub struct NotInThePast(pub Time);
+
+/// The value didn't exist yet at the point: it was created after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("{value:?} didn't exist yet at {time:?}")]
+pub struct NotYetCreated {
+    pub value: ValueId,
+    pub time: Time,
+}
+
+/// Why [`Machine::read`] failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ReadError {
+    #[error(transparent)]
+    UnknownValue(#[from] UnknownValue),
+    #[error(transparent)]
+    DeletedValue(#[from] DeletedValue),
+    #[error(transparent)]
+    Unwritten(#[from] Unwritten),
+}
 
 /// Why [`Machine::read_at`] failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -110,6 +154,69 @@ pub enum ReadAtError {
     UnknownValue(#[from] UnknownValue),
     #[error(transparent)]
     UnknownTime(#[from] UnknownTime),
+    #[error(transparent)]
+    DeletedValue(#[from] DeletedValue),
+}
+
+/// Why [`Machine::write`] failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum WriteError {
+    #[error(transparent)]
+    NotRunning(#[from] NotRunning),
+    #[error(transparent)]
+    UnknownValue(#[from] UnknownValue),
+    #[error(transparent)]
+    DeletedValue(#[from] DeletedValue),
+}
+
+/// Why [`Machine::update`] failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum UpdateError {
+    #[error(transparent)]
+    NotRunning(#[from] NotRunning),
+    #[error(transparent)]
+    UnknownValue(#[from] UnknownValue),
+    #[error(transparent)]
+    DeletedValue(#[from] DeletedValue),
+    #[error(transparent)]
+    Unwritten(#[from] Unwritten),
+}
+
+/// Why [`Machine::delete`] failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum DeleteError {
+    #[error(transparent)]
+    NotRunning(#[from] NotRunning),
+    #[error(transparent)]
+    UnknownValue(#[from] UnknownValue),
+    #[error(transparent)]
+    DeletedValue(#[from] DeletedValue),
+}
+
+/// Why [`Machine::version`] failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum VersionError {
+    #[error(transparent)]
+    UnknownValue(#[from] UnknownValue),
+    #[error(transparent)]
+    DeletedValue(#[from] DeletedValue),
+    #[error(transparent)]
+    Unwritten(#[from] Unwritten),
+}
+
+/// Why [`Machine::write_at`] failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum WriteAtError {
+    #[error(transparent)]
+    NotRunning(#[from] NotRunning),
+    #[error(transparent)]
+    UnknownValue(#[from] UnknownValue),
+    #[error(transparent)]
+    NotInThePast(#[from] NotInThePast),
+    #[error(transparent)]
+    NotYetCreated(#[from] NotYetCreated),
+    #[error(transparent)]
+    DeletedValue(#[from] DeletedValue),
 }
 
 /// One write in a value's history.
@@ -120,7 +227,7 @@ pub struct HistoryEntry<T> {
 }
 
 impl<T> HistoryEntry<T> {
-    /// The point the write added to the timeline.
+    /// The write's point.
     pub fn time(&self) -> Time {
         self.time
     }
@@ -131,185 +238,328 @@ impl<T> HistoryEntry<T> {
     }
 }
 
-/// Every value's history. Each is a `Vec<HistoryEntry<T>>` for its own `T`,
-/// sorted by time. A history is empty only for a declared value that hasn't
-/// been written yet, and such a value is never handed out.
-#[derive(Default)]
-pub(crate) struct Values {
-    histories: SlotMap<ValueId, Box<dyn Any>>,
+/// One value: its history, sorted by time, and when it was deleted.
+struct Slot<T> {
+    history: Vec<HistoryEntry<T>>,
+    deleted: Option<Time>,
 }
 
-impl Values {
-    /// Removes a declared value that was never written, such as the result
-    /// of a step that panicked.
-    pub(crate) fn remove_unwritten<T: 'static>(&mut self, value: Value<T>) {
-        let history = self
-            .histories
-            .remove(value.id)
-            .expect("the declared value is in the machine");
-        let history = history
-            .downcast::<Vec<HistoryEntry<T>>>()
-            .expect("the declared value has its type");
-        assert!(history.is_empty(), "the declared value was never written");
-    }
-
-    fn history<T: 'static>(&self, value: Value<T>) -> Result<&[HistoryEntry<T>], UnknownValue> {
-        self.histories
-            .get(value.id)
-            .and_then(|history| history.downcast_ref::<Vec<HistoryEntry<T>>>())
-            .map(Vec::as_slice)
-            .ok_or(UnknownValue(value.id))
-    }
-
-    fn history_mut<T: 'static>(
-        &mut self,
-        value: Value<T>,
-    ) -> Result<&mut Vec<HistoryEntry<T>>, UnknownValue> {
-        self.histories
-            .get_mut(value.id)
-            .and_then(|history| history.downcast_mut::<Vec<HistoryEntry<T>>>())
-            .ok_or(UnknownValue(value.id))
-    }
-}
-
-/// The newest version of a history, which is its last index.
-fn newest<T>(history: &[HistoryEntry<T>]) -> usize {
-    history.len().checked_sub(1).expect(
-        "only written values are handed out, and a value's history is empty only before its first write",
-    )
-}
-
-/// The version of the entry at `index`.
-fn version(index: usize) -> u64 {
-    index as u64
-}
-
-impl Machine {
-    /// Declares a value with no contents yet: its history is empty until
-    /// its first [`write`](Self::write), which is version 0.
-    ///
-    /// Declaring isn't a write. It makes no version, adds no point to the
-    /// timeline, and records nothing on the current step. It only gives the
-    /// value its identity, so the value can be declared in one place and
-    /// written in another: a step's result is declared before the step runs
-    /// and written by the step itself.
-    ///
-    /// Until the first write, the value has no contents to see:
-    /// [`read_at`](Self::read_at) returns `None` at any point.
-    // TODO: make this public. See CLAUDE.md for what that takes.
-    pub(crate) fn declare_value<T: 'static>(&mut self) -> Value<T> {
-        let history: Vec<HistoryEntry<T>> = Vec::new();
-        Value {
-            id: self.values.histories.insert(Box::new(history)),
-            _type: PhantomData,
+impl<T> Slot<T> {
+    /// The slot, if the value wasn't deleted.
+    fn live(&self, id: ValueId) -> Result<&Slot<T>, DeletedValue> {
+        match self.deleted {
+            Some(_) => Err(DeletedValue(id)),
+            None => Ok(self),
         }
     }
 
-    /// Creates a value holding `initial`: it declares the value, then writes
-    /// `initial` as its first version, 0, at a new point at the end of the
-    /// timeline. The write is recorded on the current step.
-    pub fn create_value<T: 'static>(&mut self, initial: T) -> Value<T> {
-        let value = self.declare_value();
-        self.write(value, initial)
-            .expect("the value was just declared");
+    /// Like [`live`](Self::live), for changing the slot.
+    fn live_mut(&mut self, id: ValueId) -> Result<&mut Slot<T>, DeletedValue> {
+        match self.deleted {
+            Some(_) => Err(DeletedValue(id)),
+            None => Ok(self),
+        }
+    }
+
+    /// The index of the newest write, which is the newest version.
+    fn newest(&self, id: ValueId) -> Result<usize, Unwritten> {
+        self.history.len().checked_sub(1).ok_or(Unwritten(id))
+    }
+}
+
+/// The machine's state: every value, each a `Slot<T>` for its own `T`. This
+/// is what events' actions and undos get.
+#[derive(Default)]
+pub(crate) struct Values {
+    slots: HashMap<ValueId, Box<dyn Any>>,
+}
+
+impl Values {
+    /// Adds the program's result value, at `id`, with no contents yet. It's
+    /// the only value made outside an event.
+    pub(crate) fn add_result<T: 'static>(&mut self, id: ValueId) -> Value<T> {
+        let value = Value::new(id);
+        self.insert(
+            value,
+            Slot::<T> {
+                history: Vec::new(),
+                deleted: None,
+            },
+        );
         value
     }
 
-    /// The value now: its newest write. The read is recorded on the current
-    /// step.
-    pub fn read<T: 'static>(&mut self, value: Value<T>) -> Result<&T, UnknownValue> {
-        let index = newest(self.values.history(value)?);
-        Ok(self.read_index(value, index))
+    fn insert<T: 'static>(&mut self, value: Value<T>, slot: Slot<T>) {
+        let previous = self.slots.insert(value.id, Box::new(slot));
+        assert!(
+            previous.is_none(),
+            "a value's id is its creation's point, and each point has one event"
+        );
+    }
+
+    fn slot<T: 'static>(&self, value: Value<T>) -> Result<&Slot<T>, UnknownValue> {
+        self.slots
+            .get(&value.id)
+            .and_then(|slot| slot.downcast_ref())
+            .ok_or(UnknownValue(value.id))
+    }
+
+    fn slot_mut<T: 'static>(&mut self, value: Value<T>) -> Result<&mut Slot<T>, UnknownValue> {
+        self.slots
+            .get_mut(&value.id)
+            .and_then(|slot| slot.downcast_mut())
+            .ok_or(UnknownValue(value.id))
+    }
+
+    /// The snapshot at `index`, which was just found in the value's history.
+    fn snapshot<T: 'static>(&self, value: Value<T>, index: usize) -> &T {
+        let slot = self.slot(value).expect("the value was just found");
+        &slot.history[index].snapshot
+    }
+
+    /// Undoes a write at `time`: takes its entry out of the history.
+    fn pop<T: 'static>(&mut self, value: Value<T>, time: Time) -> HistoryEntry<T> {
+        let slot = self
+            .slot_mut(value)
+            .expect("undos run newest first, so a write is undone before its value's creation");
+        let entry = slot
+            .history
+            .pop()
+            .expect("an undone write's entry is in the history");
+        assert_eq!(
+            entry.time, time,
+            "undos run newest first, so a write's entry is its value's newest"
+        );
+        entry
+    }
+}
+
+/// The undo of a write at `time`: it removes the write's history entry.
+fn undo_write<T: 'static>(value: Value<T>, time: Time) -> impl FnOnce(&mut Values) + 'static {
+    move |values: &mut Values| {
+        values.pop(value, time);
+    }
+}
+
+impl Machine {
+    /// Creates a value holding `initial`. The creation is an event, and its
+    /// point is both the value's identity and the time of `initial`, its
+    /// version 0. Undoing it removes the value.
+    ///
+    /// Fails with [`NotRunning`] outside a run.
+    pub fn create_value<T: 'static>(&mut self, initial: T) -> Result<Value<T>, NotRunning> {
+        self.event(|values, time| {
+            let value = Value::new(ValueId(time));
+            let slot = Slot {
+                history: vec![HistoryEntry {
+                    time,
+                    snapshot: initial,
+                }],
+                deleted: None,
+            };
+            values.insert(value, slot);
+            let undo = move |values: &mut Values| {
+                values
+                    .slots
+                    .remove(&value.id)
+                    .expect("undos run newest first, so a value is there when its creation is undone");
+            };
+            Ok::<_, NotRunning>((value, undo))
+        })
+    }
+
+    /// The value now: its newest write. During a run, the read is an event.
+    pub fn read<T: 'static>(&mut self, value: Value<T>) -> Result<&T, ReadError> {
+        let index = self
+            .values
+            .slot(value)?
+            .live(value.id)?
+            .newest(value.id)?;
+        self.observation();
+        Ok(self.values.snapshot(value, index))
     }
 
     /// The value as seen at `time`: its newest write at or before it, or
-    /// `None` if the value's first write is after `time`. When there's one,
-    /// the read is recorded on the current step.
+    /// `None` if the value was written only after `time`. During a run, the
+    /// read is an event.
+    ///
+    /// Fails with [`DeletedValue`] if the value was deleted at or before
+    /// `time`: before its deletion, its past can still be read.
     pub fn read_at<T: 'static>(
         &mut self,
         value: Value<T>,
         time: Time,
     ) -> Result<Option<&T>, ReadAtError> {
-        let Some(index) = self.index_at(value, time)? else {
-            return Ok(None);
-        };
-        Ok(Some(self.read_index(value, index)))
+        let slot = self.values.slot(value)?;
+        if !self.timeline.contains(time) {
+            return Err(UnknownTime(time).into());
+        }
+        if let Some(deleted) = slot.deleted
+            && self.order(deleted, time) != Ordering::Greater
+        {
+            return Err(DeletedValue(value.id).into());
+        }
+        // The history is sorted by time.
+        let after = slot
+            .history
+            .partition_point(|entry| self.order(entry.time, time) != Ordering::Greater);
+        let index = after.checked_sub(1);
+        self.observation();
+        Ok(index.map(|index| self.values.snapshot(value, index)))
     }
 
-    /// Replaces the value with `new`: a new version, at a new point at the
-    /// end of the timeline. The write is recorded on the current step. On a
-    /// value that hasn't been written yet, this first write is version 0.
-    pub fn write<T: 'static>(&mut self, value: Value<T>, new: T) -> Result<(), UnknownValue> {
-        // Fail before adding a point for a value that isn't there.
-        let index = self.values.history(value)?.len();
-        let time = self.timeline.push_back();
-        self.values.history_mut(value)?.push(HistoryEntry {
-            time,
-            snapshot: new,
-        });
-        self.trace.record_write(Access {
-            value: value.id,
-            version: version(index),
-        });
-        Ok(())
+    /// Replaces the value with `new`: a write event, at its own point, that
+    /// makes a new version. Undoing it removes its history entry.
+    ///
+    /// Fails with [`NotRunning`] outside a run.
+    pub fn write<T: 'static>(&mut self, value: Value<T>, new: T) -> Result<(), WriteError> {
+        self.event(|values, time| {
+            let slot = values.slot_mut(value)?.live_mut(value.id)?;
+            slot.history.push(HistoryEntry {
+                time,
+                snapshot: new,
+            });
+            Ok::<_, WriteError>(((), undo_write(value, time)))
+        })
     }
 
-    /// Writes a copy of the value, changed by `f`. Like
-    /// [`write`](Self::write), the old snapshot stays in the history. The
-    /// new value depends on the old one, so both the read and the write are
-    /// recorded on the current step.
+    /// Writes a copy of the newest contents, changed by `f`. One event,
+    /// which reads the value and writes it, and is undone like
+    /// [`write`](Self::write). The old snapshot stays in the history.
+    ///
+    /// Fails with [`NotRunning`] outside a run, before calling `f`.
     pub fn update<T: Clone + 'static>(
         &mut self,
         value: Value<T>,
         f: impl FnOnce(&mut T),
-    ) -> Result<(), UnknownValue> {
-        let mut new = self.read(value)?.clone();
+    ) -> Result<(), UpdateError> {
+        if !self.is_running() {
+            return Err(NotRunning.into());
+        }
+        let slot = self.values.slot(value)?.live(value.id)?;
+        let mut new = slot.history[slot.newest(value.id)?].snapshot.clone();
+        // Called outside the event, so a panic in `f` leaves no event.
         f(&mut new);
-        self.write(value, new)
+        self.event(|values, time| {
+            let slot = values.slot_mut(value)?.live_mut(value.id)?;
+            slot.history.push(HistoryEntry {
+                time,
+                snapshot: new,
+            });
+            Ok::<_, UpdateError>(((), undo_write(value, time)))
+        })
     }
 
-    /// The value's newest version. For inspecting the run: it isn't
-    /// recorded as a read.
-    pub fn version<T: 'static>(&self, value: Value<T>) -> Result<u64, UnknownValue> {
-        Ok(version(newest(self.values.history(value)?)))
+    /// Deletes the value: an event that marks it deleted. From then on,
+    /// reading, writing or deleting it fails with [`DeletedValue`]. Undoing
+    /// it un-deletes the value.
+    ///
+    /// Fails with [`NotRunning`] outside a run.
+    pub fn delete<T: 'static>(&mut self, value: Value<T>) -> Result<(), DeleteError> {
+        self.event(|values, time| {
+            values.slot_mut(value)?.live_mut(value.id)?.deleted = Some(time);
+            let undo = move |values: &mut Values| {
+                let slot = values
+                    .slot_mut(value)
+                    .expect("undos run newest first, so a deletion is undone before the creation");
+                slot.deleted = None;
+            };
+            Ok::<_, DeleteError>(((), undo))
+        })
+    }
+
+    /// The value's newest version. During a run, the inspection is an
+    /// event.
+    pub fn version<T: 'static>(&mut self, value: Value<T>) -> Result<u64, VersionError> {
+        let newest = self
+            .values
+            .slot(value)?
+            .live(value.id)?
+            .newest(value.id)?;
+        self.observation();
+        Ok(newest as u64)
     }
 
     /// The value's whole history, oldest first: each entry's index is its
-    /// version. For inspecting the run: it isn't recorded as a read.
-    pub fn history<T: 'static>(&self, value: Value<T>) -> Result<&[HistoryEntry<T>], UnknownValue> {
-        self.values.history(value)
+    /// version. It's still there after the value is deleted. During a run,
+    /// the inspection is an event.
+    pub fn history<T: 'static>(
+        &mut self,
+        value: Value<T>,
+    ) -> Result<&[HistoryEntry<T>], UnknownValue> {
+        self.values.slot(value)?;
+        self.observation();
+        let slot = self.values.slot(value).expect("the value was just found");
+        Ok(&slot.history)
     }
 
-    /// Records a read of the entry at `index`, which must be in the value's
-    /// history, and returns its snapshot.
-    fn read_index<T: 'static>(&mut self, value: Value<T>, index: usize) -> &T {
-        self.trace.record_read(Access {
-            value: value.id,
-            version: version(index),
-        });
-        let history = self.values.history(value).expect("the value was found");
-        history[index].snapshot()
-    }
-
-    /// The index of the newest entry at or before `time`, found by binary
-    /// search, since the history is sorted by time.
-    fn index_at<T: 'static>(
-        &self,
+    /// Writes `contents` into the past, right after `time`, which must be
+    /// the point of an earlier event in this run. The value must exist at
+    /// that point: created at or before it, and not deleted at or before
+    /// it.
+    ///
+    /// The write becomes a bootstrapped write, attached to the event at
+    /// `time` and kept across runs: every run that executes that event
+    /// executes the write right after it, at the same point. By rule 2, it
+    /// wipes everything after it, including the bootstrapped writes after
+    /// it (those attached to later events, and older ones attached to the
+    /// same event). Then the run stops, since the rest of it comes after the
+    /// write, and [`run`](Self::run) starts the next one. The contents are
+    /// handed back by each run's undo, so they don't need `Clone`.
+    ///
+    /// So on success, `write_at` doesn't return: it unwinds, with a private
+    /// payload that skips the panic hook, so nothing is printed. That needs
+    /// `panic = "unwind"`, and the program mustn't catch the unwind itself:
+    /// see [`run`](Self::run).
+    pub fn write_at<T: 'static>(
+        &mut self,
         value: Value<T>,
         time: Time,
-    ) -> Result<Option<usize>, ReadAtError> {
-        let history = self.values.history(value)?;
-        if !self.timeline.contains(time) {
-            return Err(UnknownTime(time).into());
+        contents: T,
+    ) -> Result<Infallible, WriteAtError> {
+        if !self.is_running() {
+            return Err(NotRunning.into());
         }
-        let after = history.partition_point(|entry| {
-            let order = self
-                .timeline
-                .time_cmp(entry.time, time)
-                .expect("history points stay on the timeline");
-            order != Ordering::Greater
-        });
-        Ok(after.checked_sub(1))
+        let slot = self.values.slot(value)?;
+        if !self.is_event_of_this_run(time) {
+            return Err(NotInThePast(time).into());
+        }
+        // The id is the creation's point.
+        if self.order(value.id.0, time) == Ordering::Greater {
+            return Err(NotYetCreated {
+                value: value.id,
+                time,
+            }
+            .into());
+        }
+        if let Some(deleted) = slot.deleted
+            && self.order(deleted, time) != Ordering::Greater
+        {
+            return Err(DeletedValue(value.id).into());
+        }
+
+        let contents = Rc::new(RefCell::new(Some(contents)));
+        let apply = move |values: &mut Values, time: Time| -> Undo {
+            let snapshot = contents
+                .borrow_mut()
+                .take()
+                .expect("the last run's undo handed the contents back");
+            let slot = values
+                .slot_mut(value)
+                .ok()
+                .and_then(|slot| slot.live_mut(value.id).ok())
+                .expect(
+                    "a bootstrapped write's value exists at its point, as long as the program \
+                     depends on nothing but the machine",
+                );
+            slot.history.push(HistoryEntry { time, snapshot });
+            let contents = Rc::clone(&contents);
+            Box::new(move |values: &mut Values| {
+                let entry = values.pop(value, time);
+                *contents.borrow_mut() = Some(entry.snapshot);
+            })
+        };
+        self.stop(time, Box::new(apply))
     }
 }
 
