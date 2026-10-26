@@ -35,12 +35,12 @@
 //! ```
 
 use std::{
-    any::Any, cell::RefCell, cmp::Ordering, collections::HashMap, convert::Infallible, fmt, hash,
-    marker::PhantomData, rc::Rc,
+    any::Any, cmp::Ordering, collections::HashMap, convert::Infallible, fmt, hash,
+    marker::PhantomData,
 };
 
 use crate::{
-    event::{NotRunning, Undo},
+    event::{Bootstrapped, NotRunning, Undo},
     machine::Machine,
     time::{Time, UnknownTime},
 };
@@ -267,8 +267,8 @@ impl<T> Slot<T> {
     }
 }
 
-/// The machine's state: every value, each a `Slot<T>` for its own `T`. This
-/// is what events' actions and undos get.
+/// The machine's state: every value, each a `Slot<T>` for its own `T`.
+/// Events' actions and undos reach it through the machine they get.
 #[derive(Default)]
 pub(crate) struct Values {
     slots: HashMap<ValueId, Box<dyn Any>>,
@@ -335,10 +335,37 @@ impl Values {
 }
 
 /// The undo of a write at `time`: it removes the write's history entry.
-fn undo_write<T: 'static>(value: Value<T>, time: Time) -> impl FnOnce(&mut Values) + 'static {
-    move |values: &mut Values| {
-        values.pop(value, time);
+fn undo_write<T: 'static>(value: Value<T>, time: Time) -> impl FnOnce(&mut Machine) + 'static {
+    move |machine: &mut Machine| {
+        machine.values.pop(value, time);
     }
+}
+
+/// A bootstrapped write of `contents` to `value` at `time`, attached to
+/// `event`, waiting in the queue. Applying it moves the contents into the
+/// value's history; its undo pops them and queues the write again, so the
+/// contents only ever move.
+fn queued_write<T: 'static>(value: Value<T>, time: Time, event: Time, contents: T) -> Bootstrapped {
+    Bootstrapped::new(time, move |machine: &mut Machine| -> Undo {
+        let slot = machine
+            .values
+            .slot_mut(value)
+            .ok()
+            .and_then(|slot| slot.live_mut(value.id).ok())
+            .expect(
+                "a bootstrapped write's value exists at its point, as long as the program \
+                 depends on nothing but the machine",
+            );
+        slot.history.push(HistoryEntry {
+            time,
+            snapshot: contents,
+        });
+        Box::new(move |machine: &mut Machine| {
+            let entry = machine.values.pop(value, time);
+            let write = queued_write(value, time, event, entry.snapshot);
+            machine.requeue(event, write);
+        })
+    })
 }
 
 impl Machine {
@@ -348,7 +375,7 @@ impl Machine {
     ///
     /// Fails with [`NotRunning`] outside a run.
     pub fn create_value<T: 'static>(&mut self, initial: T) -> Result<Value<T>, NotRunning> {
-        self.event(|values, time| {
+        self.event(|machine, time| {
             let value = Value::new(ValueId(time));
             let slot = Slot {
                 history: vec![HistoryEntry {
@@ -357,24 +384,19 @@ impl Machine {
                 }],
                 deleted: None,
             };
-            values.insert(value, slot);
-            let undo = move |values: &mut Values| {
-                values
-                    .slots
-                    .remove(&value.id)
-                    .expect("undos run newest first, so a value is there when its creation is undone");
+            machine.values.insert(value, slot);
+            let undo = move |machine: &mut Machine| {
+                machine.values.slots.remove(&value.id).expect(
+                    "undos run newest first, so a value is there when its creation is undone",
+                );
             };
-            Ok::<_, NotRunning>((value, undo))
+            Ok((value, undo))
         })
     }
 
     /// The value now: its newest write. During a run, the read is an event.
     pub fn read<T: 'static>(&mut self, value: Value<T>) -> Result<&T, ReadError> {
-        let index = self
-            .values
-            .slot(value)?
-            .live(value.id)?
-            .newest(value.id)?;
+        let index = self.values.slot(value)?.live(value.id)?.newest(value.id)?;
         self.observation();
         Ok(self.values.snapshot(value, index))
     }
@@ -413,13 +435,13 @@ impl Machine {
     ///
     /// Fails with [`NotRunning`] outside a run.
     pub fn write<T: 'static>(&mut self, value: Value<T>, new: T) -> Result<(), WriteError> {
-        self.event(|values, time| {
-            let slot = values.slot_mut(value)?.live_mut(value.id)?;
+        self.event(|machine, time| {
+            let slot = machine.values.slot_mut(value)?.live_mut(value.id)?;
             slot.history.push(HistoryEntry {
                 time,
                 snapshot: new,
             });
-            Ok::<_, WriteError>(((), undo_write(value, time)))
+            Ok(((), undo_write(value, time)))
         })
     }
 
@@ -440,13 +462,13 @@ impl Machine {
         let mut new = slot.history[slot.newest(value.id)?].snapshot.clone();
         // Called outside the event, so a panic in `f` leaves no event.
         f(&mut new);
-        self.event(|values, time| {
-            let slot = values.slot_mut(value)?.live_mut(value.id)?;
+        self.event(|machine, time| {
+            let slot = machine.values.slot_mut(value)?.live_mut(value.id)?;
             slot.history.push(HistoryEntry {
                 time,
                 snapshot: new,
             });
-            Ok::<_, UpdateError>(((), undo_write(value, time)))
+            Ok(((), undo_write(value, time)))
         })
     }
 
@@ -456,26 +478,23 @@ impl Machine {
     ///
     /// Fails with [`NotRunning`] outside a run.
     pub fn delete<T: 'static>(&mut self, value: Value<T>) -> Result<(), DeleteError> {
-        self.event(|values, time| {
-            values.slot_mut(value)?.live_mut(value.id)?.deleted = Some(time);
-            let undo = move |values: &mut Values| {
-                let slot = values
+        self.event(|machine, time| {
+            machine.values.slot_mut(value)?.live_mut(value.id)?.deleted = Some(time);
+            let undo = move |machine: &mut Machine| {
+                let slot = machine
+                    .values
                     .slot_mut(value)
                     .expect("undos run newest first, so a deletion is undone before the creation");
                 slot.deleted = None;
             };
-            Ok::<_, DeleteError>(((), undo))
+            Ok(((), undo))
         })
     }
 
     /// The value's newest version. During a run, the inspection is an
     /// event.
     pub fn version<T: 'static>(&mut self, value: Value<T>) -> Result<u64, VersionError> {
-        let newest = self
-            .values
-            .slot(value)?
-            .live(value.id)?
-            .newest(value.id)?;
+        let newest = self.values.slot(value)?.live(value.id)?.newest(value.id)?;
         self.observation();
         Ok(newest as u64)
     }
@@ -504,8 +523,9 @@ impl Machine {
     /// wipes everything after it, including the bootstrapped writes after
     /// it (those attached to later events, and older ones attached to the
     /// same event). Then the run stops, since the rest of it comes after the
-    /// write, and [`run`](Self::run) starts the next one. The contents are
-    /// handed back by each run's undo, so they don't need `Clone`.
+    /// write, and [`run`](Self::run) starts the next one. The contents only
+    /// move, between the queue of bootstrapped writes and the value's
+    /// history, so they don't need `Clone`.
     ///
     /// So on success, `write_at` doesn't return: it unwinds, with a private
     /// payload that skips the panic hook, so nothing is printed. That needs
@@ -538,28 +558,8 @@ impl Machine {
             return Err(DeletedValue(value.id).into());
         }
 
-        let contents = Rc::new(RefCell::new(Some(contents)));
-        let apply = move |values: &mut Values, time: Time| -> Undo {
-            let snapshot = contents
-                .borrow_mut()
-                .take()
-                .expect("the last run's undo handed the contents back");
-            let slot = values
-                .slot_mut(value)
-                .ok()
-                .and_then(|slot| slot.live_mut(value.id).ok())
-                .expect(
-                    "a bootstrapped write's value exists at its point, as long as the program \
-                     depends on nothing but the machine",
-                );
-            slot.history.push(HistoryEntry { time, snapshot });
-            let contents = Rc::clone(&contents);
-            Box::new(move |values: &mut Values| {
-                let entry = values.pop(value, time);
-                *contents.borrow_mut() = Some(entry.snapshot);
-            })
-        };
-        self.stop(time, Box::new(apply))
+        let make = move |point: Time, event: Time| queued_write(value, point, event, contents);
+        self.stop(time, Box::new(make))
     }
 }
 

@@ -19,7 +19,14 @@ fn main() {
 
         let mut sold = Vec::new();
         let mut short = 0;
-        for (customer, amount) in [("Ada", 2), ("Grace", 2), ("Alan", 1)] {
+        for (customer, amount) in [
+            ("Ada", 2),
+            ("Grace", 2),
+            ("Alan", 1),
+            ("Robertas", 11),
+            ("Margaret", 7),
+            ("Barbara", 4),
+        ] {
             let left = stock.get();
             if left >= amount {
                 stock.set(left - amount);
@@ -44,7 +51,10 @@ fn main() {
         let (stock, opening, sold) = day.get();
         println!("sold to: {}", sold.join(", "));
         println!("stock at the opening: {}", stock.get_at(opening).unwrap());
-        println!("stock right after it: {}", stock.get_at(opening.next().unwrap()).unwrap());
+        println!(
+            "stock right after it: {}",
+            stock.get_at(opening.next().unwrap()).unwrap()
+        );
         println!("stock at closing: {}", stock.get());
 
         println!("\nthe stock's history:");

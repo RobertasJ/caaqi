@@ -23,7 +23,6 @@ name = "caaqi-examples"
 version = "0.1.0"
 dependencies = [
  "caaqi",
- "caaqi-core",
 ]
 
 [[package]]

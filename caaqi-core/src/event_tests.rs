@@ -124,9 +124,9 @@ fn undoing_a_write_removes_its_history_entry() {
     let mut log = mem::take(&mut machine.events.log);
     let created_and_before = log.len() - 3;
     let result_write = log.pop().unwrap();
-    (result_write.undo)(&mut machine.values);
+    (result_write.undo)(&mut machine);
     for logged in log.drain(created_and_before..).rev() {
-        (logged.undo)(&mut machine.values);
+        (logged.undo)(&mut machine);
     }
     let history: Vec<_> = machine
         .history(value)
@@ -149,7 +149,7 @@ fn undoing_a_deletion_un_deletes() {
     // Undo only the result's write and the deletion.
     let mut log = mem::take(&mut machine.events.log);
     for logged in log.drain(log.len() - 2..).rev() {
-        (logged.undo)(&mut machine.values);
+        (logged.undo)(&mut machine);
     }
     assert_eq!(machine.read(value), Ok(&1));
 }
@@ -166,7 +166,7 @@ fn undoing_a_read_does_nothing() {
     // Undo the result's write, the `now` and the read.
     let mut log = mem::take(&mut machine.events.log);
     for logged in log.drain(log.len() - 3..).rev() {
-        (logged.undo)(&mut machine.values);
+        (logged.undo)(&mut machine);
     }
     assert_eq!(machine.read(value), Ok(&1));
     assert_eq!(machine.history(value).unwrap().len(), 1);
@@ -199,7 +199,11 @@ fn undoing_the_last_run_undoes_every_event_and_keeps_the_points() {
     assert_eq!(machine.events.old.len(), before.len() - 1);
     // Ending a run that took none of the old points drops them.
     machine.end_run();
-    assert_eq!(machine.timeline().len(), 1, "only the program's start is left");
+    assert_eq!(
+        machine.timeline().len(),
+        1,
+        "only the program's start is left"
+    );
 }
 
 #[test]
@@ -211,7 +215,12 @@ fn events_are_logged_in_timeline_order() {
         }
     });
 
-    let logged: Vec<_> = machine.events.log.iter().map(|logged| logged.time).collect();
+    let logged: Vec<_> = machine
+        .events
+        .log
+        .iter()
+        .map(|logged| logged.time)
+        .collect();
     assert_eq!(logged, points(&machine)[1..]);
 }
 
@@ -238,4 +247,76 @@ fn a_failed_event_gives_back_a_matched_point() {
     machine.run().unwrap();
 
     assert_eq!(points(&machine), first);
+}
+
+#[test]
+#[should_panic(expected = "an event's action can't make another event")]
+fn a_nested_event_panics() {
+    let (mut machine, _) = Machine::new(|machine| {
+        machine
+            .event(|machine, _| {
+                machine.now().unwrap();
+                Ok::<_, NotRunning>(((), |_: &mut Machine| {}))
+            })
+            .unwrap();
+    });
+    machine.run().unwrap();
+}
+
+#[test]
+fn two_bootstrapped_writes_on_one_event_keep_their_order_across_reruns() {
+    let (mut machine, result) = Machine::new(|machine| {
+        let a = machine.create_value(0).unwrap();
+        let b = machine.create_value(0).unwrap();
+        let mark = machine.now().unwrap();
+        if *machine.read(a).unwrap() == 0 {
+            machine.write_at(a, mark, 1).unwrap();
+        }
+        // `a`'s bootstrapped write, right after `mark`.
+        let after_a = machine.history(a).unwrap()[1].time();
+        if *machine.read(b).unwrap() == 0 {
+            machine.write_at(b, after_a, 2).unwrap();
+        }
+        (a, b, mark)
+    });
+    assert_eq!(machine.run(), Ok(3));
+    let (a, b, mark) = *machine.read(result).unwrap();
+    let attached = machine.bootstrapped_at(mark);
+    assert_eq!(attached.len(), 2);
+
+    for _ in 0..3 {
+        assert_eq!(machine.run(), Ok(1));
+        assert_eq!(machine.bootstrapped_at(mark), attached);
+        assert_eq!(points(&machine)[3], mark);
+        assert_eq!(
+            points(&machine)[4..6],
+            attached,
+            "right after `mark`, in order"
+        );
+        assert_eq!(machine.history(a).unwrap()[1].time(), attached[0]);
+        assert_eq!(machine.history(b).unwrap()[1].time(), attached[1]);
+        assert_eq!(machine.read(a), Ok(&1));
+        assert_eq!(machine.read(b), Ok(&2));
+    }
+}
+
+#[test]
+fn write_at_works_with_a_type_that_is_not_clone() {
+    /// Not `Clone`.
+    #[derive(Debug, PartialEq)]
+    struct Token(u32);
+
+    let (mut machine, result) = Machine::new(|machine| {
+        let token = machine.create_value(Token(0)).unwrap();
+        let mark = machine.now().unwrap();
+        if machine.read(token).unwrap().0 == 0 {
+            machine.write_at(token, mark, Token(7)).unwrap();
+        }
+        token
+    });
+    for runs in [2, 1, 1] {
+        assert_eq!(machine.run(), Ok(runs));
+        let token = *machine.read(result).unwrap();
+        assert_eq!(machine.read(token), Ok(&Token(7)));
+    }
 }

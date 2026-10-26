@@ -50,7 +50,11 @@ fn a_new_value_holds_its_initial_contents_at_version_0_at_its_point() {
     assert_eq!(machine.version(value), Ok(0));
     assert_eq!(versions(&mut machine, value), ["a"]);
     let created = machine.history(value).unwrap()[0].time();
-    assert_eq!(value.id(), ValueId(created), "the id is the creation's point");
+    assert_eq!(
+        value.id(),
+        ValueId(created),
+        "the id is the creation's point"
+    );
     assert_eq!(machine.timeline().next(created), Ok(Some(after)));
 }
 

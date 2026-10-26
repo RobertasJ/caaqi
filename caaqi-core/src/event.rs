@@ -1,8 +1,8 @@
 //! Events: every call a program makes on the machine during a run.
 //!
 //! Each event takes its own point on the timeline. An event is an action
-//! that returns its undo: the action changes the machine's values, and the
-//! undo it hands back puts them back as they were. Before every rerun, the
+//! that returns its undo: both get the machine, the action changes it, and
+//! the undo it hands back puts it back as it was. Before every rerun, the
 //! machine undoes every event of the last run, newest first.
 //!
 //! A write into the past ([`write_at`](Machine::write_at)) becomes a
@@ -32,16 +32,16 @@
 
 use std::{any::Any, collections::HashMap, mem, panic::resume_unwind};
 
-use crate::{machine::Machine, time::Time, value::Values};
+use crate::{machine::Machine, time::Time};
 
-/// An event's undo: puts the values back as they were before the event's
-/// action.
-pub(crate) type Undo = Box<dyn FnOnce(&mut Values)>;
+/// An event's undo: puts the machine back as it was before the event's
+/// action. Undos run between runs, where making an event fails with
+/// [`NotRunning`].
+pub(crate) type Undo = Box<dyn FnOnce(&mut Machine)>;
 
-/// What a bootstrapped write does in each run that executes it: given its
-/// point, it writes its contents and returns its undo, which hands the
-/// contents back for the next run.
-pub(crate) type Apply = Box<dyn Fn(&mut Values, Time) -> Undo>;
+/// What makes a queued bootstrapped write once its point is known: given
+/// its point and the event it's attached to.
+pub(crate) type MakeQueued = Box<dyn FnOnce(Time, Time) -> Bootstrapped>;
 
 /// The machine isn't running its program: creating, writing and deleting
 /// values, [`now`](Machine::now) and [`write_at`](Machine::write_at) work
@@ -59,17 +59,35 @@ struct Logged {
     undo: Undo,
 }
 
-/// A write into the past, kept across runs.
-struct Bootstrapped {
+/// A write into the past, kept across runs, while it waits in the queue.
+///
+/// It lives in one place at a time: in the queue between runs, and once a
+/// run applies it, its contents are in the value's history and the write
+/// itself is in its undo, which puts it back in the queue.
+pub(crate) struct Bootstrapped {
     time: Time,
-    apply: Apply,
+    /// Moves the contents into the value's history, and returns the undo.
+    apply: Box<dyn FnOnce(&mut Machine) -> Undo>,
+}
+
+impl Bootstrapped {
+    /// A queued write at `time`, which `apply` carries out.
+    pub(crate) fn new(
+        time: Time,
+        apply: impl FnOnce(&mut Machine) -> Undo + 'static,
+    ) -> Bootstrapped {
+        Bootstrapped {
+            time,
+            apply: Box::new(apply),
+        }
+    }
 }
 
 /// A write into the past that stopped the run, applied before the next run.
 struct Stop {
     /// The point the write goes right after.
     target: Time,
-    apply: Apply,
+    make: MakeQueued,
 }
 
 /// The payload a stop unwinds with. Private, so nothing else can make one.
@@ -89,10 +107,12 @@ pub(crate) struct Events {
     old: Vec<Time>,
     /// How many of `old` this run has taken.
     matched: usize,
-    /// The bootstrapped writes, by the point of the event they're attached
-    /// to, each list in timeline order. Between runs, every key is an event
-    /// in `log`.
+    /// The queue: the bootstrapped writes waiting to be applied, by the
+    /// point of the event they're attached to, each list in timeline order.
+    /// Between runs, every key is an event in `log`.
     bootstrapped: HashMap<Time, Vec<Bootstrapped>>,
+    /// Whether an event's action, or a bootstrapped write, is running.
+    in_action: bool,
     /// The write into the past that stopped the run.
     stop: Option<Stop>,
 }
@@ -113,12 +133,13 @@ impl Machine {
     ///
     /// Fails with [`NotRunning`] outside a run.
     pub fn now(&mut self) -> Result<Time, NotRunning> {
-        self.event(|_, time| Ok::<_, NotRunning>((time, |_: &mut Values| {})))
+        self.event(|_, time| Ok((time, |_: &mut Machine| {})))
     }
 
-    /// Executes an event: takes its point, runs `action` with the values and
-    /// the point, and logs the undo the action returns. Then it executes the
-    /// bootstrapped writes attached to the event.
+    /// Executes an event: takes its point, runs `action` with the machine
+    /// and the point, and logs the undo the action returns. Then it executes
+    /// the bootstrapped writes attached to the event, taking them out of the
+    /// queue.
     ///
     /// The point is the next one the last run's events left, while there
     /// are any, or a new one at the end of the timeline. If `action` fails,
@@ -126,15 +147,25 @@ impl Machine {
     /// logged.
     ///
     /// Fails with [`NotRunning`] outside a run.
-    // TODO: make this public for user-defined events, along with `Values`.
+    ///
+    /// # Panics
+    ///
+    /// If called while an action runs: the inner event would be logged
+    /// before the outer one, and break the undo order.
+    // TODO: make this public for user-defined events. Then a nested event is
+    // bad caller input, and needs an error instead of the assert.
     pub(crate) fn event<R, U, E>(
         &mut self,
-        action: impl FnOnce(&mut Values, Time) -> Result<(R, U), E>,
+        action: impl FnOnce(&mut Machine, Time) -> Result<(R, U), E>,
     ) -> Result<R, E>
     where
-        U: FnOnce(&mut Values) + 'static,
+        U: FnOnce(&mut Machine) + 'static,
         E: From<NotRunning>,
     {
+        assert!(
+            !self.events.in_action,
+            "an event's action can't make another event"
+        );
         if !self.events.running {
             return Err(NotRunning.into());
         }
@@ -143,7 +174,10 @@ impl Machine {
             Some(&time) => (time, true),
             None => (self.timeline.push_back(), false),
         };
-        let (output, undo) = match action(&mut self.values, time) {
+        self.events.in_action = true;
+        let done = action(self, time);
+        self.events.in_action = false;
+        let (output, undo) = match done {
             Ok(done) => done,
             Err(error) => {
                 if !matched {
@@ -164,11 +198,15 @@ impl Machine {
             attached_to: None,
             undo: Box::new(undo),
         });
-        for write in events.bootstrapped.get(&time).into_iter().flatten() {
-            events.log.push(Logged {
+        let queued = events.bootstrapped.remove(&time);
+        for write in queued.into_iter().flatten() {
+            self.events.in_action = true;
+            let undo = (write.apply)(self);
+            self.events.in_action = false;
+            self.events.log.push(Logged {
                 time: write.time,
                 attached_to: Some(time),
-                undo: (write.apply)(&mut self.values, write.time),
+                undo,
             });
         }
         Ok(output)
@@ -179,7 +217,7 @@ impl Machine {
     /// does nothing.
     pub(crate) fn observation(&mut self) {
         if self.events.running {
-            self.event(|_, _| Ok::<_, NotRunning>(((), |_: &mut Values| {})))
+            self.event(|_, _| Ok::<_, NotRunning>(((), |_: &mut Machine| {})))
                 .expect("the machine is running");
         }
     }
@@ -189,15 +227,26 @@ impl Machine {
         self.events.log.iter().any(|logged| logged.time == time)
     }
 
+    /// Puts an undone bootstrapped write back in the queue, in front of
+    /// `event`'s list: undos run newest first, so the writes after it are
+    /// back already.
+    pub(crate) fn requeue(&mut self, event: Time, write: Bootstrapped) {
+        self.events
+            .bootstrapped
+            .entry(event)
+            .or_default()
+            .insert(0, write);
+    }
+
     /// Stops the run with a write into the past, which goes right after
     /// `target`, the point of an event of this run. The machine applies it
     /// before the next run (see [`begin_run`](Self::begin_run)).
     ///
     /// Unwinds with a private payload, which [`run`](Self::run) catches.
     /// `resume_unwind` doesn't call the panic hook, so nothing is printed.
-    pub(crate) fn stop(&mut self, target: Time, apply: Apply) -> ! {
+    pub(crate) fn stop(&mut self, target: Time, make: MakeQueued) -> ! {
         debug_assert!(self.is_event_of_this_run(target));
-        self.events.stop = Some(Stop { target, apply });
+        self.events.stop = Some(Stop { target, make });
         resume_unwind(Box::new(StopUnwind))
     }
 
@@ -221,7 +270,7 @@ impl Machine {
         let log = mem::take(&mut self.events.log);
         let mut points = Vec::with_capacity(log.len());
         for logged in log.into_iter().rev() {
-            (logged.undo)(&mut self.values);
+            (logged.undo)(self);
             points.push((logged.time, logged.attached_to));
         }
         points.reverse();
@@ -298,15 +347,18 @@ impl Machine {
             .timeline
             .insert_after(stop.target)
             .expect("the target is on the timeline");
-        writes.push(Bootstrapped {
-            time,
-            apply: stop.apply,
-        });
+        writes.push((stop.make)(time, event));
     }
 
     /// Drops the bootstrapped writes attached to `event`, with their points.
     fn drop_bootstrapped(&mut self, event: Time) {
-        for write in self.events.bootstrapped.remove(&event).into_iter().flatten() {
+        for write in self
+            .events
+            .bootstrapped
+            .remove(&event)
+            .into_iter()
+            .flatten()
+        {
             self.timeline
                 .remove(write.time)
                 .expect("a bootstrapped write's point is on the timeline");
@@ -316,18 +368,33 @@ impl Machine {
     /// How many bootstrapped writes the machine keeps.
     #[cfg(test)]
     pub(crate) fn bootstrapped_count(&self) -> usize {
-        self.events.bootstrapped.values().map(Vec::len).sum()
+        let applied = self
+            .events
+            .log
+            .iter()
+            .filter(|logged| logged.attached_to.is_some());
+        applied.count()
+            + self
+                .events
+                .bootstrapped
+                .values()
+                .map(Vec::len)
+                .sum::<usize>()
     }
 
-    /// The points of the bootstrapped writes attached to `event`, in order.
+    /// The points of the bootstrapped writes attached to `event`, in order:
+    /// the ones this run applied, then the ones still in the queue.
     #[cfg(test)]
     pub(crate) fn bootstrapped_at(&self, event: Time) -> Vec<Time> {
-        self.events
-            .bootstrapped
-            .get(&event)
-            .into_iter()
-            .flatten()
-            .map(|write| write.time)
+        let applied = self
+            .events
+            .log
+            .iter()
+            .filter(|logged| logged.attached_to == Some(event));
+        let queued = self.events.bootstrapped.get(&event).into_iter().flatten();
+        applied
+            .map(|logged| logged.time)
+            .chain(queued.map(|write| write.time))
             .collect()
     }
 }

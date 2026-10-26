@@ -7,7 +7,6 @@ publish = false
 
 [dependencies]
 caaqi.workspace = true
-caaqi-core.workspace = true
 
 [workspace]
 members = ["caaqi-core", "caaqi"]
