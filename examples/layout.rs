@@ -8,12 +8,10 @@
 //! into the past, at its own start, if it isn't what it drew with (a
 //! correction). Each box only knows about itself, and nested boxes compose.
 //!
-//! The inner box doesn't observe the outer box's width, so the outer box's
-//! write into the past doesn't affect it, and the inner box's own write
-//! lasts. For now, the machine rewrites more than what's affected:
-//! everything after the outer box's start, the inner box's write included.
-//! The inner box makes the same correction again on the next run, so the
-//! result is the same, at the cost of runs: 2^n for n nested boxes.
+//! The outer box writes into the past before the inner box's start, so its
+//! write wipes the inner box's (rule 2). The inner box measures itself again
+//! on the next run and writes again, and the machine settles once nobody
+//! needs to.
 //!
 //! The program doesn't print, since it would print again on every run: it
 //! returns its lines, and `main` prints them once the machine settles.

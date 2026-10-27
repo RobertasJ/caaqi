@@ -1,13 +1,9 @@
 //! Writing into the past.
 //!
-//! A read sees the present: the newest write at or before its own point.
-//! `write_at(point, contents)` writes right after an earlier point, and
-//! rewrites everything after it that it affects: whatever observed what the
-//! write changed, then whatever observed those changes, and so on.
-//!
-//! For now, the machine rewrites more than that, which costs runs but gives
-//! the same result: the run stops at the write, and the program runs again
-//! from the start, with the write in place.
+//! Rule 1: a read sees the newest write at or before its own point. Rule 2:
+//! `write_at(point, contents)` writes right after an earlier point and wipes
+//! everything after it. The run stops at the write, and the program runs
+//! again from the start, with the write in place.
 //!
 //! The write goes right after the point, so a read after the point sees it,
 //! and a read at the point itself doesn't: looking at the past is explicit.

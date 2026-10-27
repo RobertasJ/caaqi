@@ -1,19 +1,16 @@
-//! Which writes into the past last.
+//! An earlier write wipes later ones.
 //!
-//! A write into the past lasts as long as the code that made it is
-//! unaffected and the event it's attached to still happens. When an earlier
-//! write affects the code that made it, that code is rewritten, and so is
-//! its write: it's made again only if the code still makes it.
+//! A write into the past is kept on every rerun, until a write further back
+//! wipes it (rule 2: a write into the past wipes everything after it). Then
+//! it's gone, unless the code that made it runs again and makes it again.
 //!
-//! Both programs below write `b` at a late point, then `a` at an earlier
-//! one. In the first, the code that writes `b` reads `a`, so `a`'s write
-//! affects it: it runs again, sees that `a` is 1, and doesn't write `b`. In
-//! the second, it doesn't read `a`, so `b`'s write is unaffected and lasts.
+//! Both programs below first write `b` into the past, then `a` further back,
+//! which wipes `b`'s write:
 //!
-//! For now, the machine rewrites everything after `a`'s write, more than
-//! what's affected, so in the second program `b`'s write is wiped too. The
-//! unaffected code makes the same write again on the next run: the same
-//! result, one run more.
+//! - In the first, the code that writes `b` also checks `a`. Once `a` is 1,
+//!   it doesn't write `b` again, so `b` ends up 0.
+//! - In the second, it only checks `b`, so the next run writes `b` again,
+//!   and `b` ends up 1.
 //!
 //! Run with `just example wiping`.
 

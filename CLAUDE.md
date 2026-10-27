@@ -82,27 +82,7 @@ Steps come later, as places the machine can restart from, so that less reruns. S
 - **Values** (`value.rs`): `ValueId(Time)` is the creation's point, so a matched creation gives back the same id, and handles held by bootstrapped writes and the outside stay valid across reruns. `Values` is `HashMap<ValueId, Box<dyn Any>>`, each a `Slot<T> { history: Vec<HistoryEntry<T>>, deleted: Option<Time> }`; a handle of the wrong type fails with `UnknownValue`. `create_value(initial)` is one event: its point is the value's id and the time of `initial`, version 0; its undo removes the slot. `write` and `update` each push an entry at their own point (during a run that's always the newest point, so the history stays sorted); their undo pops it. `update` calls its closure before the event, so a panic in it leaves no event. `delete` marks the slot deleted at its point and its undo clears the mark; afterwards `read`, `write`, `update`, `delete` and `version` fail with `DeletedValue`, `read_at` fails at or after the deletion and works before it, and `history` still works. `read` returns the newest snapshot; `read_at(value, time)` binary-searches the history for the newest write at or before `time` (`None` before the first write). Each fallible method returns one error struct or its own enum of them (`ReadError`, `ReadAtError`, `WriteError`, `UpdateError`, `DeleteError`, `VersionError`, `WriteAtError`). A version is the entry's index in the history, not a stored field. That's fine without cutoff, but once cutoff exists, a rerun rewrites histories, so a rewritten write could reuse a version and fool it: versions will need a per-value counter that never goes back.
 - **Tests**: core tests reach the run internals (`run_once`, `undo_last_run`, `end_run`, `bootstrapped_at`, `bootstrapped_count`); the layout test (a parent centering a label using the width its child writes into the past) lives in `machine_tests.rs`, and in the crate docs of both crates.
 
-### Next: rewriting only what's affected
-
-The rules above are what the machine without steps does. The next implementation step narrows rule 2 to what a write actually affects. Use these words when explaining how caaqi behaves:
-
-> **Axiom.** An observer sees the present: a read sees the newest write at or before its own point. Looking at the past is explicit (`read_at`).
->
-> **Rule.** A write into the past rewrites everything after it that it affects.
->
-> **What "affects" means.** Whatever observed something the write changed, then whatever observed those changes, and so on. That includes writes into the past made by affected code, since they exist because that code made them.
->
-> **What follows.**
-> - A write into the past lasts as long as the code that made it is unaffected and the event it's attached to still happens.
-> - Changing an input is a write into the past from outside.
-> - A run settles when it makes no write into the past. Whether a program settles is up to the program: guess, check, correct.
-> - The machine may rewrite more than what's affected, never less. Rewriting more only costs runs, because unaffected code would make the same writes again.
-
-The machine without steps needs no change to be correct under this rule: it rewrites everything after the write, which is more than what's affected. That only costs runs. The `layout` example takes 2^n runs for n nested boxes, because the outer box's write wipes the inner box's, and the inner box makes the same fix again. The narrower rule would keep the inner box's write, since the inner box never observes the outer box's width. `queens` relies on the clause about writes made by affected code: the rows below restart at column 0 because the dead ends that pushed them forward were affected. The `wiping` example shows both cases: a write by affected code that's gone, and one by unaffected code that's made again.
-
 ### Planned
-
-- Rewriting only what's affected (above): track which events observed what, and rewrite only those, instead of everything after the write.
 
 - Inputs from the outside, as writes into the past.
 - Steps, then opt-in `PartialEq` cutoff.
