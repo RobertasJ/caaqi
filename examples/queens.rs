@@ -4,10 +4,13 @@
 //! column no queen above attacks. A row starts looking at a column it reads
 //! from a value, 0 at first. When a row has no column left, the queen above
 //! it is misplaced, so the row writes into the past, at the row above's
-//! point, that it should start one column further. That wipes everything
-//! after it (rule 2), including the starting columns of the rows below, and
-//! the program goes on from there, as if the queen above had been placed
-//! differently all along.
+//! point, that it should start one column further.
+//!
+//! That write rewrites everything it affects. The rows below observed the
+//! queen above, so they're rewritten, and so are the dead ends that pushed
+//! them further, since affected code made them. So the rows below start
+//! again at column 0, as if the queen above had been placed differently all
+//! along.
 //!
 //! So the program is a straight line, with no backtracking in it: the
 //! machine reruns it until no row reaches a dead end.

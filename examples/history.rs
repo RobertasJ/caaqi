@@ -2,9 +2,9 @@
 //!
 //! A small shop opens with some stock, and customers buy from it. When the
 //! stock runs short, the shop restocks at the opening, with a write into
-//! the past: everything after the opening is wiped, and the day plays out
-//! again with more stock, until nobody is turned away. Afterwards, the
-//! stock's history shows the day as it finally happened.
+//! the past: every sale after the opening saw the stock, so the whole day
+//! plays out again with more stock, until nobody is turned away. Afterwards,
+//! the stock's history shows the day as it finally happened.
 //!
 //! Run with `just example history`.
 
